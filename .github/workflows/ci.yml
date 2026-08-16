@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: |
+          go vet ./...
+          go vet -tags=docker ./internal/repository/...
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.12.2
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Unit and integration tests
+        run: go test -race -tags=docker -coverprofile=coverage.out ./...
+
+      - name: Coverage gate
+        run: |
+          grep -v '/mocks/' coverage.out > coverage.filtered.out
+          total=$(go tool cover -func=coverage.filtered.out | awk '/^total:/ {print $3}')
+          echo "Покрытие (без сгенерированных моков): $total"
+          echo "coverage: $total" >> "$GITHUB_STEP_SUMMARY"
+          awk -v value="${total%\%}" 'BEGIN { exit (value > 50 ? 0 : 1) }' \
+            || { echo "Покрытие ниже 50%"; exit 1; }
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        run: make build
+
+  docker:
+    name: Docker images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate compose file
+        run: docker compose -f docker/docker-compose.yml config -q
+
+      - name: Build server image
+        run: docker build -f docker/Dockerfile --build-arg APP=server .
+
+      - name: Build worker image
+        run: docker build -f docker/Dockerfile --build-arg APP=worker .
