@@ -4,8 +4,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/fireflg/gophprofile/pkg/ctxmeta"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 // Logger пишет в zap строку доступа по каждому запросу.
@@ -36,7 +40,15 @@ func Logger(log *zap.Logger) func(http.Handler) http.Handler {
 				fields = append(fields, zap.String("request_id", id))
 			}
 
-			log.Check(levelFor(rw.Status()), "request").Write(fields...)
+			if ctxmeta.UserIDFrom(r.Context()) == "" {
+				if id := chi.URLParam(r, "user_id"); id != "" {
+					fields = append(fields, zap.String("user_id", id))
+				}
+			}
+
+			entryLog := logger.WithContext(r.Context(), log)
+
+			entryLog.Check(levelFor(rw.Status()), "request").Write(fields...)
 		})
 	}
 }

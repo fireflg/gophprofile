@@ -12,11 +12,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/internal/metrics"
 	"github.com/fireflg/gophprofile/pkg/imageutil"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 // sniffSize - сколько байт читаем для определения MIME-типа.
@@ -46,6 +49,16 @@ func NewAvatarService(
 
 // Upload валидирует файл, кладёт оригинал в хранилище и ставит задачу на обработку.
 func (s *AvatarService) Upload(ctx context.Context, in domain.UploadInput) (*domain.Avatar, error) {
+	started := time.Now()
+
+	avatar, err := s.upload(ctx, in)
+
+	metrics.ObserveUpload(ctx, started, err)
+
+	return avatar, err
+}
+
+func (s *AvatarService) upload(ctx context.Context, in domain.UploadInput) (*domain.Avatar, error) {
 	if in.UserID == "" {
 		return nil, domain.ErrUserIDRequired
 	}
@@ -87,6 +100,7 @@ func (s *AvatarService) Upload(ctx context.Context, in domain.UploadInput) (*dom
 	if err := s.repo.Create(ctx, avatar); err != nil {
 		return nil, err
 	}
+
 	body := io.MultiReader(bytes.NewReader(head), in.Reader)
 
 	if err := s.storage.Put(ctx, avatar.S3Key, body, in.Size, mimeType); err != nil {
@@ -127,41 +141,71 @@ func (s *AvatarService) ListByUser(ctx context.Context, userID string, limit, of
 
 // GetFile отдаёт файл аватарки в запрошенном размере и формате.
 func (s *AvatarService) GetFile(ctx context.Context, id uuid.UUID, size, format string) (*domain.FileResult, error) {
+	ctx, span := tracer.Start(ctx, "get_avatar_file")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("avatar_id", id.String()),
+		attribute.String("size", size),
+		attribute.String("format", format),
+	)
+
 	avatar, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, recordError(span, err)
 	}
 
-	return s.fileFor(ctx, avatar, size, format)
+	result, err := s.fileFor(ctx, avatar, size, format)
+
+	return result, recordError(span, err)
 }
 
 // GetUserFile отдаёт файл последней аватарки пользователя.
 func (s *AvatarService) GetUserFile(ctx context.Context, userID, size, format string) (*domain.FileResult, error) {
+	ctx, span := tracer.Start(ctx, "get_user_avatar_file")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("user_id", userID),
+		attribute.String("size", size),
+		attribute.String("format", format),
+	)
+
 	avatar, err := s.repo.GetLatestByUser(ctx, userID)
 	if err != nil {
-		return nil, err
+		return nil, recordError(span, err)
 	}
 
-	return s.fileFor(ctx, avatar, size, format)
+	result, err := s.fileFor(ctx, avatar, size, format)
+
+	return result, recordError(span, err)
 }
 
 // Delete мягко удаляет аватарку и ставит задачу на очистку хранилища.
 func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, requesterID string) error {
+	ctx, span := tracer.Start(ctx, "delete_avatar")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("avatar_id", id.String()),
+		attribute.String("requester_id", requesterID),
+	)
+
 	if requesterID == "" {
-		return domain.ErrUserIDRequired
+		return recordError(span, domain.ErrUserIDRequired)
 	}
 
 	avatar, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		return err
+		return recordError(span, err)
 	}
 
 	if avatar.UserID != requesterID {
-		return domain.ErrForbidden
+		return recordError(span, domain.ErrForbidden)
 	}
 
 	if err := s.repo.SoftDelete(ctx, avatar.ID); err != nil {
-		return err
+		return recordError(span, err)
 	}
 
 	s.publish(ctx, domain.Event{
@@ -286,7 +330,7 @@ func convert(src *domain.FileResult, targetMime string) (*domain.FileResult, err
 // publish отправляет событие; сбой брокера не ломает пользовательский запрос.
 func (s *AvatarService) publish(ctx context.Context, event domain.Event) {
 	if err := s.publisher.Publish(ctx, event); err != nil {
-		s.log.Error("publish event",
+		logger.WithContext(ctx, s.log).Error("publish event",
 			zap.String("type", string(event.Type)),
 			zap.String("avatar_id", event.AvatarID.String()),
 			zap.Error(err))

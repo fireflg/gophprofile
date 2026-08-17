@@ -8,9 +8,14 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/pkg/otelx"
 )
 
 //go:generate mockgen -source=publisher_kafka.go -destination=mocks/publisher_mock.go -package=mocks
@@ -65,12 +70,22 @@ func NewKafkaPublisher(cfg config.Kafka) (*KafkaPublisher, error) {
 
 // Publish отправляет событие в топик.
 func (p *KafkaPublisher) Publish(ctx context.Context, event domain.Event) error {
+	ctx, span := tracer.Start(ctx, p.topic+" publish", trace.WithSpanKind(trace.SpanKindProducer))
+	defer span.End()
+
+	span.SetAttributes(
+		semconv.MessagingSystemKafka,
+		semconv.MessagingDestinationName(p.topic),
+		attribute.String("event.type", string(event.Type)),
+		attribute.String("avatar_id", event.AvatarID.String()),
+	)
+
 	ctx = context.WithoutCancel(ctx)
 	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 	payload, err := json.Marshal(event)
 	if err != nil {
-		return err
+		return recordError(span, err)
 	}
 	msg := kafka.Message{
 		Key:   []byte(event.AvatarID.String()),
@@ -80,7 +95,9 @@ func (p *KafkaPublisher) Publish(ctx context.Context, event domain.Event) error 
 			{Key: "schema-version", Value: []byte("v1")},
 		},
 	}
-	return p.writer.WriteMessages(ctx, msg)
+	otel.GetTextMapPropagator().Inject(ctx, &otelx.HeaderCarrier{Headers: &msg.Headers})
+
+	return recordError(span, p.writer.WriteMessages(ctx, msg))
 }
 
 // Ping проверяет доступность брокера запросом метаданных топика.

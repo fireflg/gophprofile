@@ -19,6 +19,8 @@ type Config struct {
 	S3       S3       `mapstructure:"s3"`
 	Kafka    Kafka    `mapstructure:"kafka"`
 	Image    Image    `mapstructure:"image"`
+	OTel     OTel     `mapstructure:"otel"`
+	Metrics  Metrics  `mapstructure:"metrics"`
 }
 
 type App struct {
@@ -83,6 +85,36 @@ func (s Size) String() string {
 	return fmt.Sprintf("%dx%d", s.Width, s.Height)
 }
 
+// OTel - экспорт трейсов и логов в OTLP-коллектор.
+type OTel struct {
+	Enabled     bool    `mapstructure:"enabled"`
+	Endpoint    string  `mapstructure:"endpoint"`
+	ServiceName string  `mapstructure:"service_name"`
+	Insecure    bool    `mapstructure:"insecure"`
+	SampleRatio float64 `mapstructure:"sample_ratio"`
+}
+
+// Active - признак того, что экспорт настроен: без адреса коллектора
+// включённый флаг ничего не значит.
+func (o OTel) Active() bool {
+	return o.Enabled && o.Endpoint != ""
+}
+
+// Metrics - отдельный HTTP-endpoint с метриками в формате Prometheus.
+//
+// От OTel не зависит: модель pull, коллектор для метрик не нужен.
+type Metrics struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Host    string `mapstructure:"host"`
+	Port    int    `mapstructure:"port"`
+	Path    string `mapstructure:"path"`
+}
+
+// Addr - адрес прослушивания сервера метрик.
+func (m Metrics) Addr() string {
+	return fmt.Sprintf("%s:%d", m.Host, m.Port)
+}
+
 // envBindings - соответствие ключей конфигурации переменным окружения.
 //
 //nolint:gosec // G101.
@@ -117,6 +149,17 @@ var envBindings = map[string]string{
 	"image.max_file_size":      "MAX_FILE_SIZE",
 	"image.allowed_mime_types": "ALLOWED_MIME_TYPES",
 	"image.thumbnail_sizes":    "THUMBNAIL_SIZES",
+
+	"otel.enabled":      "OTEL_ENABLED",
+	"otel.endpoint":     "OTEL_EXPORTER_OTLP_ENDPOINT",
+	"otel.service_name": "OTEL_SERVICE_NAME",
+	"otel.insecure":     "OTEL_EXPORTER_OTLP_INSECURE",
+	"otel.sample_ratio": "OTEL_TRACES_SAMPLER_ARG",
+
+	"metrics.enabled": "METRICS_ENABLED",
+	"metrics.host":    "METRICS_HOST",
+	"metrics.port":    "METRICS_PORT",
+	"metrics.path":    "METRICS_PATH",
 }
 
 // Load читает конфигурацию.
@@ -194,6 +237,17 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("image.max_file_size", 10*1024*1024)
 	v.SetDefault("image.allowed_mime_types", []string{"image/jpeg", "image/png", "image/webp"})
 	v.SetDefault("image.thumbnail_sizes", []string{"100x100", "300x300"})
+
+	v.SetDefault("otel.enabled", false)
+	v.SetDefault("otel.endpoint", "")
+	v.SetDefault("otel.service_name", "avatars-service")
+	v.SetDefault("otel.insecure", true)
+	v.SetDefault("otel.sample_ratio", 1.0)
+
+	v.SetDefault("metrics.enabled", true)
+	v.SetDefault("metrics.host", "0.0.0.0")
+	v.SetDefault("metrics.port", 9090)
+	v.SetDefault("metrics.path", "/metrics")
 }
 
 func (c *Config) validate() error {
@@ -211,6 +265,17 @@ func (c *Config) validate() error {
 	}
 	if c.HTTP.Port <= 0 {
 		return fmt.Errorf("config: http.port must be positive")
+	}
+	if c.OTel.SampleRatio < 0 || c.OTel.SampleRatio > 1 {
+		return fmt.Errorf("config: otel.sample_ratio must be within [0, 1]")
+	}
+	if c.Metrics.Enabled {
+		if c.Metrics.Port <= 0 {
+			return fmt.Errorf("config: metrics.port must be positive")
+		}
+		if !strings.HasPrefix(c.Metrics.Path, "/") {
+			return fmt.Errorf("config: metrics.path must start with /")
+		}
 	}
 
 	return nil

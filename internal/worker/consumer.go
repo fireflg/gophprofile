@@ -8,10 +8,18 @@ import (
 	"io"
 
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/pkg/ctxmeta"
+	"github.com/fireflg/gophprofile/pkg/logger"
+	"github.com/fireflg/gophprofile/pkg/otelx"
 )
 
 //go:generate mockgen -source=consumer.go -destination=mocks/consumer_mock.go -package=mocks
@@ -71,7 +79,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return fmt.Errorf("fetch message: %w", err)
 		}
 
-		if err := c.HandleMessage(ctx, msg.Value); err != nil {
+		if err := c.HandleMessage(ctx, msg); err != nil {
 			c.log.Error("handle message",
 				zap.Error(err),
 				zap.String("topic", msg.Topic),
@@ -91,17 +99,45 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 }
 
-// HandleMessage разбирает пейлоад и передаёт в процессор.
-func (c *Consumer) HandleMessage(ctx context.Context, payload []byte) error {
+// HandleMessage разбирает пейлоад и передаёт её процессору.
+func (c *Consumer) HandleMessage(ctx context.Context, msg kafka.Message) error {
+	ctx = otel.GetTextMapPropagator().Extract(ctx, &otelx.HeaderCarrier{Headers: &msg.Headers})
+
+	ctx, span := tracer.Start(ctx, "kafka.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+	defer span.End()
+
+	span.SetAttributes(
+		semconv.MessagingSystemKafka,
+		semconv.MessagingDestinationName(msg.Topic),
+		semconv.MessagingKafkaOffset(int(msg.Offset)),
+		attribute.Int("messaging.kafka.partition", msg.Partition),
+	)
+
+	log := logger.WithContext(ctx, c.log)
+
 	var event domain.Event
-	if err := json.Unmarshal(payload, &event); err != nil {
-		c.log.Error("malformed event payload", zap.Error(err))
+	if err := json.Unmarshal(msg.Value, &event); err != nil {
+		log.Error("malformed event payload", zap.Error(err))
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 
 		return nil
 	}
 
+	span.SetAttributes(
+		attribute.String("event.type", string(event.Type)),
+		attribute.String("avatar.id", event.AvatarID.String()),
+	)
+
+	if event.UserID != "" {
+		ctx = ctxmeta.WithUserID(ctx, event.UserID)
+
+		span.SetAttributes(attribute.String("user_id", event.UserID))
+	}
+
 	if err := c.processor.Handle(ctx, event); err != nil {
-		return fmt.Errorf("handle event %s (%s): %w", event.Type, event.AvatarID, err)
+		return recordError(span, fmt.Errorf("handle event %s (%s): %w", event.Type, event.AvatarID, err))
 	}
 
 	return nil

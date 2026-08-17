@@ -12,6 +12,7 @@ import (
 	"github.com/fireflg/gophprofile/internal/services"
 	"github.com/fireflg/gophprofile/internal/worker"
 	"github.com/fireflg/gophprofile/pkg/logger"
+	"github.com/fireflg/gophprofile/pkg/otelx"
 )
 
 // run собирает зависимости воркера и читает топик до сигнала остановки.
@@ -21,14 +22,30 @@ func run() error {
 		return err
 	}
 
-	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	tel, err := otelx.Setup(ctx, cfg.OTel, cfg.Metrics)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = zapLog.Sync() }()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
+	if err != nil {
+		return err
+	}
+
+	otelx.SetErrorHandler(zapLog)
+
+	defer func() {
+		_ = zapLog.Sync()
+
+		if shutdownErr := tel.Shutdown(ctx); shutdownErr != nil {
+			zapLog.Error("shutdown telemetry", zap.Error(shutdownErr))
+		}
+	}()
+
+	go tel.Metrics.Serve(zapLog)
 
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {

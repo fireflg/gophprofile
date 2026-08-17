@@ -242,5 +242,5 @@ func TestRunClosesReaderOnExit(t *testing.T) {
 func TestHandleMessageSkipsMalformedPayload(t *testing.T) {
 	fixture := newConsumerFixture(t)
 
-	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), []byte("{не json")))
+	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), kafka.Message{Value: []byte("{не json")}))
 }
