@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -19,8 +18,6 @@ import (
 
 const testTopic = "avatars.events"
 
-const testPublishTimeout = 5 * time.Second
-
 func newTestPublisher(t *testing.T) (*KafkaPublisher, *mocks.MockKafkaWriter, *mocks.MockKafkaMetadataClient) {
 	t.Helper()
 
@@ -28,14 +25,7 @@ func newTestPublisher(t *testing.T) (*KafkaPublisher, *mocks.MockKafkaWriter, *m
 	writer := mocks.NewMockKafkaWriter(ctrl)
 	client := mocks.NewMockKafkaMetadataClient(ctrl)
 
-	publisher := &KafkaPublisher{
-		writer:  writer,
-		client:  client,
-		topic:   testTopic,
-		timeout: testPublishTimeout,
-	}
-
-	return publisher, writer, client
+	return &KafkaPublisher{writer: writer, client: client, topic: testTopic}, writer, client
 }
 
 func testEvent() domain.Event {
@@ -64,17 +54,6 @@ func TestNewKafkaPublisherRejectsIncompleteConfig(t *testing.T) {
 
 	_, err = NewKafkaPublisher(config.Kafka{Brokers: []string{"localhost:9092"}, Topic: testTopic})
 	require.ErrorContains(t, err, "write_timeout")
-}
-
-func TestNewKafkaPublisherUsesConfiguredTimeout(t *testing.T) {
-	publisher, err := NewKafkaPublisher(config.Kafka{
-		Brokers:      []string{"localhost:9092"},
-		Topic:        testTopic,
-		WriteTimeout: 12 * time.Second,
-	})
-	require.NoError(t, err)
-
-	require.Equal(t, 12*time.Second, publisher.timeout)
 }
 
 func TestPublishSendsEventAsJSON(t *testing.T) {
@@ -124,21 +103,6 @@ func TestPublishReturnsWriterError(t *testing.T) {
 	writer.EXPECT().WriteMessages(gomock.Any(), gomock.Any()).Return(writeErr)
 
 	require.ErrorIs(t, publisher.Publish(t.Context(), testEvent()), writeErr)
-}
-
-func TestPublishSurvivesCancelledRequestContext(t *testing.T) {
-	publisher, writer, _ := newTestPublisher(t)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	writer.EXPECT().
-		WriteMessages(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(ctx context.Context, _ ...kafka.Message) error {
-			return ctx.Err()
-		})
-
-	require.NoError(t, publisher.Publish(ctx, testEvent()))
 }
 
 func TestPingAsksMetadataForTopic(t *testing.T) {

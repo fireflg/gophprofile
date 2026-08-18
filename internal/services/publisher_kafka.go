@@ -30,10 +30,9 @@ type KafkaMetadataClient interface {
 //
 // Потребитель этих событий — internal/worker/consumer.go.
 type KafkaPublisher struct {
-	writer  KafkaWriter
-	client  KafkaMetadataClient
-	topic   string
-	timeout time.Duration
+	writer KafkaWriter
+	client KafkaMetadataClient
+	topic  string
 }
 
 var _ domain.EventPublisher = (*KafkaPublisher)(nil)

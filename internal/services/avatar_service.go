@@ -305,6 +305,8 @@ func convert(src *domain.FileResult, targetMime string) (*domain.FileResult, err
 
 // publish отправляет событие в фоновом режиме
 func (s *AvatarService) publish(ctx context.Context, event domain.Event) {
+	ctx = context.WithoutCancel(ctx)
+
 	select {
 	case s.sem <- struct{}{}:
 	default:

@@ -409,6 +409,32 @@ func TestDeleteDoesNotWaitForPublish(t *testing.T) {
 	service.Wait()
 }
 
+// Контекст запроса отменяется, как только обработчик вернул ответ, — фоновая публикация это переживает.
+func TestPublishSurvivesCancelledRequestContext(t *testing.T) {
+	service, deps := newService(t)
+
+	avatar := readyAvatar()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	var publishErr error
+
+	deps.repo.EXPECT().GetByID(gomock.Any(), avatar.ID).Return(avatar, nil)
+	deps.repo.EXPECT().SoftDelete(gomock.Any(), avatar.ID).Return(nil)
+	deps.publisher.EXPECT().
+		Publish(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ domain.Event) error {
+			publishErr = ctx.Err()
+
+			return publishErr
+		})
+
+	require.NoError(t, service.Delete(ctx, avatar.ID, avatar.UserID))
+	service.Wait()
+
+	require.NoError(t, publishErr)
+}
+
 func TestURLDelegatesToStorage(t *testing.T) {
 	service, deps := newService(t)
 
