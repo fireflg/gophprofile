@@ -6,10 +6,16 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 // Logger пишет в zap строку доступа по каждому запросу.
 func Logger(log *zap.Logger) func(http.Handler) http.Handler {
+	if log != nil {
+		log = logger.Component(log, "http")
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if log == nil {

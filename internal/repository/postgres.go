@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,6 +13,10 @@ import (
 
 // NewPool создаёт и проверяет пул соединений с PostgreSQL.
 func NewPool(ctx context.Context, cfg config.Postgres) (*pgxpool.Pool, error) {
+	if cfg.DSN == "" {
+		return nil, errors.New("postgres: dsn is required")
+	}
+
 	poolCfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)

@@ -53,7 +53,8 @@ func newTestEnv(t *testing.T, maxFileSize int64) *testEnv {
 	publisher := mocks.NewMockEventPublisher(gomock.NewController(t))
 	publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-	service := services.NewAvatarService(repo, storage, publisher, cfg.Image, log)
+	service, err := services.NewAvatarService(repo, storage, publisher, cfg.Image, log)
+	require.NoError(t, err)
 
 	static, err := web.Static()
 	require.NoError(t, err)
@@ -66,11 +67,14 @@ func newTestEnv(t *testing.T, maxFileSize int64) *testEnv {
 		Static:  static,
 	})
 
+	processor, err := worker.NewProcessor(repo, storage, cfg.Image.ThumbnailSizes, log)
+	require.NoError(t, err)
+
 	return &testEnv{
 		router:    router,
 		repo:      repo,
 		storage:   storage,
-		processor: worker.NewProcessor(repo, storage, cfg.Image.ThumbnailSizes, log),
+		processor: processor,
 	}
 }
 

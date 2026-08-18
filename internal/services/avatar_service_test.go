@@ -15,6 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
@@ -47,7 +49,41 @@ func newService(t *testing.T) (*services.AvatarService, serviceMocks) {
 		ThumbnailSizes:   []config.Size{{Width: 100, Height: 100}},
 	}
 
-	return services.NewAvatarService(deps.repo, deps.storage, deps.publisher, cfg, zap.NewNop()), deps
+	service, err := services.NewAvatarService(deps.repo, deps.storage, deps.publisher, cfg, zap.NewNop())
+	require.NoError(t, err)
+
+	return service, deps
+}
+
+func TestNewAvatarServiceRejectsInvalidImageConfig(t *testing.T) {
+	tests := map[string]struct {
+		cfg  config.Image
+		want string
+	}{
+		"нулевой размер файла": {
+			cfg:  config.Image{AllowedMimeTypes: []string{"image/png"}},
+			want: "max_file_size must be positive",
+		},
+		"пустые mime-типы": {
+			cfg:  config.Image{MaxFileSize: testMaxFileSize},
+			want: "allowed_mime_types must not be empty",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+
+			_, err := services.NewAvatarService(
+				mocks.NewMockAvatarRepository(ctrl),
+				mocks.NewMockFileStorage(ctrl),
+				mocks.NewMockEventPublisher(ctrl),
+				tc.cfg,
+				zap.NewNop(),
+			)
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
 }
 
 func pngBytes(t *testing.T, width, height int) []byte {
@@ -106,6 +142,8 @@ func TestUploadStoresOriginalAndPublishesEvent(t *testing.T) {
 	})
 
 	require.NoError(t, err)
+	service.Wait()
+
 	require.Equal(t, "image/png", avatar.MimeType)
 	require.Equal(t, domain.UploadStatusUploaded, avatar.UploadStatus)
 	require.Equal(t, domain.ProcessingStatusPending, avatar.ProcessingStatus)
@@ -291,6 +329,7 @@ func TestDeleteSoftDeletesAndPublishes(t *testing.T) {
 	)
 
 	require.NoError(t, service.Delete(t.Context(), avatar.ID, avatar.UserID))
+	service.Wait()
 }
 
 func TestDeleteUserAvatarChecksOwnership(t *testing.T) {
@@ -310,6 +349,64 @@ func TestPublishFailureDoesNotBreakDelete(t *testing.T) {
 	deps.publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(errors.New("kafka недоступна"))
 
 	require.NoError(t, service.Delete(t.Context(), avatar.ID, avatar.UserID))
+	service.Wait()
+}
+
+func TestServiceLogsAreTaggedWithComponent(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	repo := mocks.NewMockAvatarRepository(ctrl)
+	storage := mocks.NewMockFileStorage(ctrl)
+	publisher := mocks.NewMockEventPublisher(ctrl)
+
+	core, logs := observer.New(zapcore.DebugLevel)
+
+	service, err := services.NewAvatarService(repo, storage, publisher, config.Image{
+		MaxFileSize:      testMaxFileSize,
+		AllowedMimeTypes: []string{"image/png"},
+	}, zap.New(core))
+	require.NoError(t, err)
+
+	avatar := readyAvatar()
+
+	repo.EXPECT().GetByID(gomock.Any(), avatar.ID).Return(avatar, nil)
+	repo.EXPECT().SoftDelete(gomock.Any(), avatar.ID).Return(nil)
+	publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(errors.New("kafka is down"))
+
+	require.NoError(t, service.Delete(t.Context(), avatar.ID, avatar.UserID))
+	service.Wait()
+
+	require.Equal(t, 1, logs.Len())
+	require.Equal(t, "avatar_service", logs.All()[0].ContextMap()["component"])
+}
+
+func TestDeleteDoesNotWaitForPublish(t *testing.T) {
+	service, deps := newService(t)
+
+	avatar := readyAvatar()
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	deps.repo.EXPECT().GetByID(gomock.Any(), avatar.ID).Return(avatar, nil)
+	deps.repo.EXPECT().SoftDelete(gomock.Any(), avatar.ID).Return(nil)
+	deps.publisher.EXPECT().
+		Publish(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ domain.Event) error {
+			close(started)
+			<-release
+
+			return nil
+		})
+
+	require.NoError(t, service.Delete(t.Context(), avatar.ID, avatar.UserID))
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("publish did not start")
+	}
+
+	close(release)
+	service.Wait()
 }
 
 func TestURLDelegatesToStorage(t *testing.T) {

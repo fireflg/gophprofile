@@ -36,6 +36,7 @@ func TestLoggerWritesAccessEntry(t *testing.T) {
 	require.Equal(t, zapcore.InfoLevel, entry.Level)
 
 	fields := entry.ContextMap()
+	require.Equal(t, "http", fields["component"])
 	require.Equal(t, http.MethodGet, fields["method"])
 	require.Equal(t, "/api/v1/avatars", fields["path"])
 	require.EqualValues(t, http.StatusOK, fields["status"])

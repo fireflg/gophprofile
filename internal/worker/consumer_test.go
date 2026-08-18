@@ -41,10 +41,13 @@ func newConsumerFixture(t *testing.T) *consumerFixture {
 	sizes := []config.Size{{Width: 100, Height: 100}}
 	log := zap.NewNop()
 
+	processor, err := NewProcessor(repo, storage, sizes, log)
+	require.NoError(t, err)
+
 	return &consumerFixture{
 		consumer: &Consumer{
 			reader:    reader,
-			processor: NewProcessor(repo, storage, sizes, log),
+			processor: processor,
 			log:       log,
 		},
 		reader:  reader,

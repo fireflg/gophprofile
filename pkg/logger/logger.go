@@ -29,6 +29,15 @@ func New(env, level string) (*zap.Logger, error) {
 	return log, nil
 }
 
+// Component возвращает дочерний логгер компонента.
+func Component(log *zap.Logger, name string) *zap.Logger {
+	if log == nil {
+		return zap.NewNop()
+	}
+
+	return log.With(zap.String("component", name))
+}
+
 func isDevelopment(env string) bool {
 	return strings.EqualFold(env, "development") || strings.EqualFold(env, "local")
 }

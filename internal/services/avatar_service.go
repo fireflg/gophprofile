@@ -9,6 +9,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,10 +18,14 @@ import (
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
 	"github.com/fireflg/gophprofile/pkg/imageutil"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 // sniffSize - сколько байт читаем для определения MIME-типа.
 const sniffSize = 512
+
+// maxPublishInFlight - предел одновременных фоновых публикаций событий.
+const maxPublishInFlight = 32
 
 // AvatarService - сценарии работы с аватарками: загрузка, выдача, удаление.
 type AvatarService struct {
@@ -29,9 +34,9 @@ type AvatarService struct {
 	publisher domain.EventPublisher
 	cfg       config.Image
 	log       *zap.Logger
+	sem       chan struct{}
+	wg        sync.WaitGroup
 }
-
-var _ domain.AvatarUseCase = (*AvatarService)(nil)
 
 // NewAvatarService собирает сервис из зависимостей-портов.
 func NewAvatarService(
@@ -40,8 +45,23 @@ func NewAvatarService(
 	publisher domain.EventPublisher,
 	cfg config.Image,
 	log *zap.Logger,
-) *AvatarService {
-	return &AvatarService{repo: repo, storage: storage, publisher: publisher, cfg: cfg, log: log}
+) (*AvatarService, error) {
+	if cfg.MaxFileSize <= 0 {
+		return nil, errors.New("image: max_file_size must be positive")
+	}
+
+	if len(cfg.AllowedMimeTypes) == 0 {
+		return nil, errors.New("image: allowed_mime_types must not be empty")
+	}
+
+	return &AvatarService{
+		repo:      repo,
+		storage:   storage,
+		publisher: publisher,
+		cfg:       cfg,
+		log:       logger.Component(log, "avatar_service"),
+		sem:       make(chan struct{}, maxPublishInFlight),
+	}, nil
 }
 
 // Upload валидирует файл, кладёт оригинал в хранилище и ставит задачу на обработку.
@@ -283,14 +303,41 @@ func convert(src *domain.FileResult, targetMime string) (*domain.FileResult, err
 	}, nil
 }
 
-// publish отправляет событие; сбой брокера не ломает пользовательский запрос.
+// publish отправляет событие в фоновом режиме
 func (s *AvatarService) publish(ctx context.Context, event domain.Event) {
+	select {
+	case s.sem <- struct{}{}:
+	default:
+		s.log.Warn("publish queue is full, sending inline",
+			zap.String("type", string(event.Type)),
+			zap.String("avatar_id", event.AvatarID.String()))
+		s.send(ctx, event)
+
+		return
+	}
+
+	s.wg.Add(1)
+
+	go func() {
+		defer s.wg.Done()
+		defer func() { <-s.sem }()
+
+		s.send(ctx, event)
+	}()
+}
+
+func (s *AvatarService) send(ctx context.Context, event domain.Event) {
 	if err := s.publisher.Publish(ctx, event); err != nil {
 		s.log.Error("publish event",
 			zap.String("type", string(event.Type)),
 			zap.String("avatar_id", event.AvatarID.String()),
 			zap.Error(err))
 	}
+}
+
+// Wait дожидается фоновых публикаций
+func (s *AvatarService) Wait() {
+	s.wg.Wait()
 }
 
 func originalKey(userID string, id uuid.UUID, mimeType string) string {

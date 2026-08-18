@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 // checkTimeout - предел ожидания одной проверки компонента.
@@ -21,7 +23,6 @@ type Check struct {
 // ComponentStatus - результат проверки одного компонента.
 type ComponentStatus struct {
 	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
 }
 
 // HealthResponse - ответ GET /health.
@@ -45,7 +46,7 @@ type HealthHandler struct {
 
 // NewHealthHandler создаёт обработчик с набором проверок.
 func NewHealthHandler(log *zap.Logger, checks ...Check) *HealthHandler {
-	return &HealthHandler{log: log, checks: checks}
+	return &HealthHandler{log: logger.Component(log, "health_handler"), checks: checks}
 }
 
 // Health обрабатывает GET /health: 200, если живы все компоненты, иначе 503.
@@ -67,7 +68,12 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 
 			status := ComponentStatus{Status: statusOK}
 			if err := check.Probe(ctx); err != nil {
-				status = ComponentStatus{Status: statusFail, Error: err.Error()}
+				status = ComponentStatus{Status: statusFail}
+
+				if h.log != nil {
+					h.log.Error("health check failed",
+						zap.String("check", check.Name), zap.Error(err))
+				}
 			}
 
 			mu.Lock()

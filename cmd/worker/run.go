@@ -27,6 +27,8 @@ func run() error {
 	}
 	defer func() { _ = zapLog.Sync() }()
 
+	runLog := logger.Component(zapLog, "worker")
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -41,26 +43,29 @@ func run() error {
 		return err
 	}
 
-	processor := worker.NewProcessor(
+	processor, err := worker.NewProcessor(
 		repository.NewAvatarRepository(pool),
 		storage,
 		cfg.Image.ThumbnailSizes,
 		zapLog,
 	)
+	if err != nil {
+		return err
+	}
 
 	consumer, err := worker.NewConsumer(cfg.Kafka, processor, zapLog)
 	if err != nil {
 		return err
 	}
 
-	zapLog.Info("worker started",
+	runLog.Info("worker started",
 		zap.String("topic", cfg.Kafka.Topic), zap.String("group_id", cfg.Kafka.GroupID))
 
 	if err := consumer.Run(ctx); err != nil {
 		return err
 	}
 
-	zapLog.Info("worker stopped")
+	runLog.Info("worker stopped")
 
 	return nil
 }

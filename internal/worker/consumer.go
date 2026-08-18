@@ -12,9 +12,10 @@ import (
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
-//go:generate mockgen -source=consumer.go -destination=mocks/consumer_mock.go -package=mocks
+//go:generate mockgen -source=consumer.go -destination=mocks/consumer_mock.gen.go -package=mocks
 
 // KafkaReader - часть kafka.Reader, которой пользуется потребитель.
 type KafkaReader interface {
@@ -50,7 +51,7 @@ func NewConsumer(cfg config.Kafka, processor *Processor, log *zap.Logger) (*Cons
 		GroupID: cfg.GroupID,
 	})
 
-	return &Consumer{reader: reader, processor: processor, log: log}, nil
+	return &Consumer{reader: reader, processor: processor, log: logger.Component(log, "consumer")}, nil
 }
 
 // Run читает события из брокера до отмены контекста или закрытия reader.

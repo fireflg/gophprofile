@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -18,6 +19,8 @@ import (
 
 const testTopic = "avatars.events"
 
+const testPublishTimeout = 5 * time.Second
+
 func newTestPublisher(t *testing.T) (*KafkaPublisher, *mocks.MockKafkaWriter, *mocks.MockKafkaMetadataClient) {
 	t.Helper()
 
@@ -25,7 +28,14 @@ func newTestPublisher(t *testing.T) (*KafkaPublisher, *mocks.MockKafkaWriter, *m
 	writer := mocks.NewMockKafkaWriter(ctrl)
 	client := mocks.NewMockKafkaMetadataClient(ctrl)
 
-	return &KafkaPublisher{writer: writer, client: client, topic: testTopic}, writer, client
+	publisher := &KafkaPublisher{
+		writer:  writer,
+		client:  client,
+		topic:   testTopic,
+		timeout: testPublishTimeout,
+	}
+
+	return publisher, writer, client
 }
 
 func testEvent() domain.Event {
@@ -51,6 +61,20 @@ func TestNewKafkaPublisherRejectsIncompleteConfig(t *testing.T) {
 
 	_, err = NewKafkaPublisher(config.Kafka{Brokers: []string{"localhost:9092"}})
 	require.ErrorContains(t, err, "topic")
+
+	_, err = NewKafkaPublisher(config.Kafka{Brokers: []string{"localhost:9092"}, Topic: testTopic})
+	require.ErrorContains(t, err, "write_timeout")
+}
+
+func TestNewKafkaPublisherUsesConfiguredTimeout(t *testing.T) {
+	publisher, err := NewKafkaPublisher(config.Kafka{
+		Brokers:      []string{"localhost:9092"},
+		Topic:        testTopic,
+		WriteTimeout: 12 * time.Second,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 12*time.Second, publisher.timeout)
 }
 
 func TestPublishSendsEventAsJSON(t *testing.T) {

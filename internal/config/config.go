@@ -57,10 +57,11 @@ type S3 struct {
 }
 
 type Kafka struct {
-	Brokers  []string `mapstructure:"brokers"`
-	Topic    string   `mapstructure:"topic"`
-	GroupID  string   `mapstructure:"group_id"`
-	ClientID string   `mapstructure:"client_id"`
+	Brokers      []string      `mapstructure:"brokers"`
+	Topic        string        `mapstructure:"topic"`
+	GroupID      string        `mapstructure:"group_id"`
+	ClientID     string        `mapstructure:"client_id"`
+	WriteTimeout time.Duration `mapstructure:"write_timeout"`
 }
 
 // Image - ограничения загрузки и набор миниатюр.
@@ -109,14 +110,21 @@ var envBindings = map[string]string{
 	"s3.use_ssl":         "S3_USE_SSL",
 	"s3.public_base_url": "S3_PUBLIC_BASE_URL",
 
-	"kafka.brokers":   "KAFKA_BROKERS",
-	"kafka.topic":     "KAFKA_TOPIC",
-	"kafka.group_id":  "KAFKA_GROUP_ID",
-	"kafka.client_id": "KAFKA_CLIENT_ID",
+	"kafka.brokers":       "KAFKA_BROKERS",
+	"kafka.topic":         "KAFKA_TOPIC",
+	"kafka.group_id":      "KAFKA_GROUP_ID",
+	"kafka.client_id":     "KAFKA_CLIENT_ID",
+	"kafka.write_timeout": "KAFKA_WRITE_TIMEOUT",
 
 	"image.max_file_size":      "MAX_FILE_SIZE",
 	"image.allowed_mime_types": "ALLOWED_MIME_TYPES",
 	"image.thumbnail_sizes":    "THUMBNAIL_SIZES",
+}
+
+var requiredKeys = []string{
+	"postgres.dsn",
+	"s3.access_key",
+	"s3.secret_key",
 }
 
 // Load читает конфигурацию.
@@ -145,6 +153,10 @@ func LoadFrom(configFile string) (*Config, error) {
 		}
 	}
 
+	if err := checkRequired(v); err != nil {
+		return nil, err
+	}
+
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("config: unmarshal: %w", err)
@@ -156,11 +168,17 @@ func LoadFrom(configFile string) (*Config, error) {
 	}
 	cfg.Image.ThumbnailSizes = sizes
 
-	if err := cfg.validate(); err != nil {
-		return nil, err
+	return &cfg, nil
+}
+
+func checkRequired(v *viper.Viper) error {
+	for _, key := range requiredKeys {
+		if strings.TrimSpace(v.GetString(key)) == "" {
+			return fmt.Errorf("config: %s is required, set it in the config file or via %s", key, envBindings[key])
+		}
 	}
 
-	return &cfg, nil
+	return nil
 }
 
 func setDefaults(v *viper.Viper) {
@@ -173,14 +191,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http.write_timeout", "60s")
 	v.SetDefault("http.shutdown_timeout", "15s")
 
-	v.SetDefault("postgres.dsn", "postgres://avatars:avatars@localhost:5432/avatars?sslmode=disable")
 	v.SetDefault("postgres.max_conns", 10)
 	v.SetDefault("postgres.min_conns", 2)
 	v.SetDefault("postgres.max_conn_lifetime", "1h")
 
 	v.SetDefault("s3.endpoint", "localhost:9000")
-	v.SetDefault("s3.access_key", "minioadmin")
-	v.SetDefault("s3.secret_key", "minioadmin")
 	v.SetDefault("s3.bucket", "avatars")
 	v.SetDefault("s3.region", "us-east-1")
 	v.SetDefault("s3.use_ssl", false)
@@ -190,30 +205,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("kafka.topic", "avatars.events")
 	v.SetDefault("kafka.group_id", "avatars-worker")
 	v.SetDefault("kafka.client_id", "avatars-service")
+	v.SetDefault("kafka.write_timeout", "5s")
 
 	v.SetDefault("image.max_file_size", 10*1024*1024)
 	v.SetDefault("image.allowed_mime_types", []string{"image/jpeg", "image/png", "image/webp"})
 	v.SetDefault("image.thumbnail_sizes", []string{"100x100", "300x300"})
-}
-
-func (c *Config) validate() error {
-	if c.Postgres.DSN == "" {
-		return fmt.Errorf("config: postgres.dsn is required")
-	}
-	if c.S3.Bucket == "" {
-		return fmt.Errorf("config: s3.bucket is required")
-	}
-	if c.Image.MaxFileSize <= 0 {
-		return fmt.Errorf("config: image.max_file_size must be positive")
-	}
-	if len(c.Image.AllowedMimeTypes) == 0 {
-		return fmt.Errorf("config: image.allowed_mime_types must not be empty")
-	}
-	if c.HTTP.Port <= 0 {
-		return fmt.Errorf("config: http.port must be positive")
-	}
-
-	return nil
 }
 
 func parseSizes(raw []string) ([]Size, error) {
@@ -241,10 +237,6 @@ func parseSizes(raw []string) ([]Size, error) {
 		}
 
 		sizes = append(sizes, Size{Width: width, Height: height})
-	}
-
-	if len(sizes) == 0 {
-		return nil, fmt.Errorf("config: image.thumbnail_sizes must not be empty")
 	}
 
 	return sizes, nil
