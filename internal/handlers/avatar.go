@@ -2,6 +2,8 @@
 package handlers
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -12,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 const (
@@ -25,20 +28,36 @@ const (
 	cacheMaxAge = 86400
 )
 
+//go:generate mockgen -source=avatar.go -destination=mocks/usecase_mock.gen.go -package=mocks
+
+// AvatarUseCase - то, что HTTP-слой ожидает от сценариев работы с аватарками.
+type AvatarUseCase interface {
+	Upload(ctx context.Context, in domain.UploadInput) (*domain.Avatar, error)
+	GetFile(ctx context.Context, id uuid.UUID, size, format string) (*domain.FileResult, error)
+	GetUserFile(ctx context.Context, userID, size, format string) (*domain.FileResult, error)
+	GetMetadata(ctx context.Context, id uuid.UUID) (*domain.Avatar, error)
+	ListByUser(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error)
+	Delete(ctx context.Context, id uuid.UUID, requesterID string) error
+	DeleteUserAvatar(ctx context.Context, userID, requesterID string) error
+	URL(key string) string
+	MaxFileSize() int64
+	AllowedMimeTypes() []string
+}
+
 // AvatarHandler - HTTP-обработчики /api/v1.
 type AvatarHandler struct {
-	service domain.AvatarUseCase
+	service AvatarUseCase
 	log     *zap.Logger
 }
 
 // NewAvatarHandler создаёт обработчики аватарок.
-func NewAvatarHandler(service domain.AvatarUseCase, log *zap.Logger) *AvatarHandler {
-	return &AvatarHandler{service: service, log: log}
+func NewAvatarHandler(service AvatarUseCase, log *zap.Logger) *AvatarHandler {
+	return &AvatarHandler{service: service, log: logger.Component(log, "avatar_handler")}
 }
 
 // Upload обрабатывает POST /api/v1/avatars.
 func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
-	userID := UserIDFromRequest(r)
+	userID := userIDFromRequest(r)
 	if userID == "" {
 		h.writeError(w, domain.ErrUserIDRequired)
 
@@ -47,7 +66,7 @@ func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 
 	file, fileHeader, err := r.FormFile("file")
 	if err != nil {
-		h.writeError(w, domain.ErrFileRequired)
+		h.writeError(w, formFileError(err))
 
 		return
 	}
@@ -164,7 +183,7 @@ func (h *AvatarHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.service.Delete(r.Context(), id, UserIDFromRequest(r)); err != nil {
+	if err := h.service.Delete(r.Context(), id, userIDFromRequest(r)); err != nil {
 		h.writeError(w, err)
 
 		return
@@ -175,7 +194,7 @@ func (h *AvatarHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 // DeleteUserAvatar обрабатывает DELETE /api/v1/users/{user_id}/avatar.
 func (h *AvatarHandler) DeleteUserAvatar(w http.ResponseWriter, r *http.Request) {
-	err := h.service.DeleteUserAvatar(r.Context(), chi.URLParam(r, "user_id"), UserIDFromRequest(r))
+	err := h.service.DeleteUserAvatar(r.Context(), chi.URLParam(r, "user_id"), userIDFromRequest(r))
 	if err != nil {
 		h.writeError(w, err)
 
@@ -236,9 +255,17 @@ func (h *AvatarHandler) writeError(w http.ResponseWriter, err error) {
 	WriteError(w, h.log, err, h.service.MaxFileSize(), h.service.AllowedMimeTypes())
 }
 
-// UserIDFromRequest достаёт идентификатор пользователя из заголовка X-User-ID.
-func UserIDFromRequest(r *http.Request) string {
+// userIDFromRequest достаёт идентификатор пользователя из заголовка X-User-ID.
+func userIDFromRequest(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get(HeaderUserID))
+}
+
+func formFileError(err error) error {
+	if errors.As(err, new(*http.MaxBytesError)) {
+		return domain.ErrFileTooLarge
+	}
+
+	return domain.ErrFileRequired
 }
 
 func parseAvatarID(raw string) (uuid.UUID, error) {

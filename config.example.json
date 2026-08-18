@@ -11,15 +11,15 @@
     "shutdown_timeout": "15s"
   },
   "postgres": {
-    "dsn": "postgres://avatars:avatars@localhost:5432/avatars?sslmode=disable",
+    "dsn": "postgres://postgres:postgres@localhost:5432/avatars?sslmode=disable",
     "max_conns": 10,
     "min_conns": 2,
     "max_conn_lifetime": "1h"
   },
   "s3": {
     "endpoint": "localhost:9000",
-    "access_key": "minioadmin",
-    "secret_key": "minioadmin",
+    "access_key": "access_key",
+    "secret_key": "secret_key",
     "bucket": "avatars",
     "region": "us-east-1",
     "use_ssl": false,
@@ -29,7 +29,8 @@
     "brokers": ["localhost:9092"],
     "topic": "avatars.events",
     "group_id": "avatars-worker",
-    "client_id": "avatars-service"
+    "client_id": "avatars-service",
+    "write_timeout": "5s"
   },
   "image": {
     "max_file_size": 10485760,

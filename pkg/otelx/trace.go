@@ -17,6 +17,10 @@ func NewTracerProvider(
 	cfg config.OTel,
 	res *resource.Resource,
 ) (*sdktrace.TracerProvider, error) {
+	if cfg.SampleRatio < 0 || cfg.SampleRatio > 1 {
+		return nil, fmt.Errorf("otel: sample_ratio must be within [0, 1], got %v", cfg.SampleRatio)
+	}
+
 	opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(cfg.Endpoint)}
 	if cfg.Insecure {
 		opts = append(opts, otlptracegrpc.WithInsecure())

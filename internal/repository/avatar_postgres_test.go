@@ -111,8 +111,16 @@ func applyMigrations(ctx context.Context, pool *pgxpool.Pool) error {
 
 	sort.Strings(files)
 
-	if _, err := pool.Exec(ctx, "DROP TABLE IF EXISTS avatars CASCADE"); err != nil {
-		return fmt.Errorf("reset schema: %w", err)
+	reset := []string{
+		"DROP TABLE IF EXISTS avatars CASCADE",
+		"DROP TYPE IF EXISTS avatar_upload_status",
+		"DROP TYPE IF EXISTS avatar_processing_status",
+	}
+
+	for _, statement := range reset {
+		if _, err := pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("reset schema: %w", err)
+		}
 	}
 
 	for _, file := range files {
@@ -194,6 +202,56 @@ func TestCreateAndGetByID(t *testing.T) {
 	require.Zero(t, stored.Width)
 	require.Zero(t, stored.Height)
 	require.Nil(t, stored.DeletedAt)
+}
+
+func TestStatusColumnsRejectUnknownValues(t *testing.T) {
+	repo := newRepo(t)
+
+	avatar := createAvatar(t, repo, "user-1")
+
+	_, err := testPool.Exec(t.Context(),
+		"UPDATE avatars SET upload_status = 'bogus' WHERE id = $1", avatar.ID)
+	require.Error(t, err)
+
+	_, err = testPool.Exec(t.Context(),
+		"UPDATE avatars SET processing_status = 'bogus' WHERE id = $1", avatar.ID)
+	require.Error(t, err)
+}
+
+func TestNotNullColumnsRejectNull(t *testing.T) {
+	repo := newRepo(t)
+
+	avatar := createAvatar(t, repo, "user-1")
+
+	columns := []string{"upload_status", "processing_status", "thumbnail_s3_keys", "created_at", "updated_at"}
+
+	for _, column := range columns {
+		t.Run(column, func(t *testing.T) {
+			_, err := testPool.Exec(t.Context(),
+				"UPDATE avatars SET "+column+" = NULL WHERE id = $1", avatar.ID)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestColumnDefaultsApplyOnInsert(t *testing.T) {
+	repo := newRepo(t)
+
+	id := uuid.New()
+
+	_, err := testPool.Exec(t.Context(),
+		`INSERT INTO avatars (id, user_id, file_name, mime_type, size_bytes, s3_key)
+			VALUES ($1, 'user-1', 'avatar.png', 'image/png', 1024, 'avatars/user-1/original.png')`, id)
+	require.NoError(t, err)
+
+	stored, err := repo.GetByID(t.Context(), id)
+	require.NoError(t, err)
+
+	require.Equal(t, domain.UploadStatusUploading, stored.UploadStatus)
+	require.Equal(t, domain.ProcessingStatusPending, stored.ProcessingStatus)
+	require.Empty(t, stored.ThumbnailS3Keys)
+	require.False(t, stored.CreatedAt.IsZero())
+	require.False(t, stored.UpdatedAt.IsZero())
 }
 
 func TestGetByIDNotFound(t *testing.T) {

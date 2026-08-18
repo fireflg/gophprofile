@@ -18,7 +18,7 @@ import (
 	"github.com/fireflg/gophprofile/pkg/otelx"
 )
 
-//go:generate mockgen -source=publisher_kafka.go -destination=mocks/publisher_mock.go -package=mocks
+//go:generate mockgen -source=publisher_kafka.go -destination=mocks/publisher_mock.gen.go -package=mocks
 
 // KafkaWriter — продюсер сообщений Kafka.
 type KafkaWriter interface {
@@ -52,6 +52,10 @@ func NewKafkaPublisher(cfg config.Kafka) (*KafkaPublisher, error) {
 		return nil, errors.New("kafka: topic is required")
 	}
 
+	if cfg.WriteTimeout <= 0 {
+		return nil, errors.New("kafka: write_timeout must be positive")
+	}
+
 	addr := kafka.TCP(cfg.Brokers...)
 
 	return &KafkaPublisher{
@@ -62,6 +66,7 @@ func NewKafkaPublisher(cfg config.Kafka) (*KafkaPublisher, error) {
 			RequiredAcks:           kafka.RequireAll,
 			BatchTimeout:           10 * time.Millisecond,
 			AllowAutoTopicCreation: false,
+			WriteTimeout:           cfg.WriteTimeout,
 		},
 		client: &kafka.Client{Addr: addr},
 		topic:  cfg.Topic,
@@ -80,9 +85,6 @@ func (p *KafkaPublisher) Publish(ctx context.Context, event domain.Event) error 
 		attribute.String("avatar_id", event.AvatarID.String()),
 	)
 
-	ctx = context.WithoutCancel(ctx)
-	ctx, cancel := context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return recordError(span, err)

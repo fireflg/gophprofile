@@ -21,7 +21,17 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
+func setSecrets(t *testing.T) {
+	t.Helper()
+
+	t.Setenv("POSTGRES_DSN", "postgres://test/db")
+	t.Setenv("S3_ACCESS_KEY", "test-access-key")
+	t.Setenv("S3_SECRET_KEY", "test-secret-key")
+}
+
 func TestLoadDefaults(t *testing.T) {
+	setSecrets(t)
+
 	cfg, err := config.LoadFrom("")
 	require.NoError(t, err)
 
@@ -33,6 +43,7 @@ func TestLoadDefaults(t *testing.T) {
 	require.Equal(t, []string{"image/jpeg", "image/png", "image/webp"}, cfg.Image.AllowedMimeTypes)
 	require.Equal(t, []config.Size{{Width: 100, Height: 100}, {Width: 300, Height: 300}}, cfg.Image.ThumbnailSizes)
 	require.Equal(t, []string{"localhost:9092"}, cfg.Kafka.Brokers)
+	require.Equal(t, 5*time.Second, cfg.Kafka.WriteTimeout)
 }
 
 func TestLoadFromJSONFile(t *testing.T) {
@@ -40,7 +51,7 @@ func TestLoadFromJSONFile(t *testing.T) {
 		"app": {"env": "production", "log_level": "warn"},
 		"http": {"host": "127.0.0.1", "port": 9090, "read_timeout": "5s"},
 		"postgres": {"dsn": "postgres://from-file/db"},
-		"s3": {"bucket": "custom-bucket", "use_ssl": true},
+		"s3": {"bucket": "custom-bucket", "use_ssl": true, "access_key": "file-key", "secret_key": "file-secret"},
 		"kafka": {"brokers": ["kafka-1:9092", "kafka-2:9092"], "topic": "custom.events"},
 		"image": {"max_file_size": 2048, "thumbnail_sizes": ["50x50"]}
 	}`)
@@ -53,6 +64,7 @@ func TestLoadFromJSONFile(t *testing.T) {
 	require.Equal(t, 5*time.Second, cfg.HTTP.ReadTimeout)
 	require.Equal(t, "postgres://from-file/db", cfg.Postgres.DSN)
 	require.Equal(t, "custom-bucket", cfg.S3.Bucket)
+	require.Equal(t, "file-key", cfg.S3.AccessKey)
 	require.True(t, cfg.S3.UseSSL)
 	require.Equal(t, []string{"kafka-1:9092", "kafka-2:9092"}, cfg.Kafka.Brokers)
 	require.Equal(t, []config.Size{{Width: 50, Height: 50}}, cfg.Image.ThumbnailSizes)
@@ -62,6 +74,8 @@ func TestLoadFromJSONFile(t *testing.T) {
 }
 
 func TestLoadFromEnv(t *testing.T) {
+	setSecrets(t)
+
 	t.Setenv("APP_ENV", "staging")
 	t.Setenv("HTTP_PORT", "7070")
 	t.Setenv("HTTP_WRITE_TIMEOUT", "45s")
@@ -92,6 +106,8 @@ func TestLoadFromEnv(t *testing.T) {
 
 // Окружение перекрывает файл: так контейнер настраивается без пересборки образа.
 func TestEnvOverridesFile(t *testing.T) {
+	setSecrets(t)
+
 	path := writeConfig(t, `{"app": {"env": "production"}, "http": {"port": 9090}}`)
 
 	t.Setenv("APP_ENV", "staging")
@@ -105,6 +121,8 @@ func TestEnvOverridesFile(t *testing.T) {
 }
 
 func TestLoadUsesConfigFileEnv(t *testing.T) {
+	setSecrets(t)
+
 	path := writeConfig(t, `{"s3": {"bucket": "from-config-file-env"}}`)
 
 	t.Setenv("CONFIG_FILE", path)
@@ -113,6 +131,45 @@ func TestLoadUsesConfigFileEnv(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, "from-config-file-env", cfg.S3.Bucket)
+}
+
+func TestLoadRequiresSecrets(t *testing.T) {
+	tests := map[string]struct {
+		set  map[string]string
+		want string
+	}{
+		"нет dsn": {
+			set:  map[string]string{"S3_ACCESS_KEY": "key", "S3_SECRET_KEY": "secret"},
+			want: "postgres.dsn is required",
+		},
+		"нет ключа s3": {
+			set:  map[string]string{"POSTGRES_DSN": "postgres://test/db", "S3_SECRET_KEY": "secret"},
+			want: "s3.access_key is required",
+		},
+		"нет секрета s3": {
+			set:  map[string]string{"POSTGRES_DSN": "postgres://test/db", "S3_ACCESS_KEY": "key"},
+			want: "s3.secret_key is required",
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			for key, value := range tc.set {
+				t.Setenv(key, value)
+			}
+
+			_, err := config.LoadFrom("")
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+func TestLoadRejectsBlankSecretInFile(t *testing.T) {
+	t.Setenv("POSTGRES_DSN", "postgres://test/db")
+	t.Setenv("S3_ACCESS_KEY", "test-access-key")
+
+	_, err := config.LoadFrom(writeConfig(t, `{"s3": {"secret_key": "   "}}`))
+	require.ErrorContains(t, err, "s3.secret_key is required")
 }
 
 func TestLoadMissingFileFails(t *testing.T) {
@@ -125,24 +182,20 @@ func TestLoadInvalidJSONFails(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestValidationErrorsFromEnv(t *testing.T) {
+func TestThumbnailSizesParseErrors(t *testing.T) {
 	tests := map[string]struct {
-		env  map[string]string
-		want string
+		value string
+		want  string
 	}{
-		"нулевой размер файла": {env: map[string]string{"MAX_FILE_SIZE": "0"}, want: "max_file_size"},
-		"нулевой порт":         {env: map[string]string{"HTTP_PORT": "0"}, want: "http.port"},
-		"кривой размер превью": {env: map[string]string{"THUMBNAIL_SIZES": "100"}, want: "thumbnail size"},
-		"нечисловая ширина":    {env: map[string]string{"THUMBNAIL_SIZES": "axb"}, want: "thumbnail width"},
-		"нулевая высота":       {env: map[string]string{"THUMBNAIL_SIZES": "100x0"}, want: "thumbnail height"},
-		"пустой список превью": {env: map[string]string{"THUMBNAIL_SIZES": " "}, want: "thumbnail_sizes"},
+		"кривой размер превью": {value: "100", want: "thumbnail size"},
+		"нечисловая ширина":    {value: "axb", want: "thumbnail width"},
+		"нулевая высота":       {value: "100x0", want: "thumbnail height"},
 	}
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			for key, value := range tc.env {
-				t.Setenv(key, value)
-			}
+			setSecrets(t)
+			t.Setenv("THUMBNAIL_SIZES", tc.value)
 
 			_, err := config.LoadFrom("")
 			require.ErrorContains(t, err, tc.want)
@@ -150,24 +203,23 @@ func TestValidationErrorsFromEnv(t *testing.T) {
 	}
 }
 
-// Пустая переменная окружения для viper равна незаданной, поэтому обязательные
-// поля можно обнулить только явным пустым значением в файле.
-func TestValidationErrorsFromFile(t *testing.T) {
-	tests := map[string]struct {
-		content string
-		want    string
-	}{
-		"пустой dsn":       {content: `{"postgres": {"dsn": ""}}`, want: "postgres.dsn"},
-		"пустой bucket":    {content: `{"s3": {"bucket": ""}}`, want: "s3.bucket"},
-		"пустые mime-типы": {content: `{"image": {"allowed_mime_types": []}}`, want: "allowed_mime_types"},
-	}
+func TestLoadDoesNotCheckBusinessRules(t *testing.T) {
+	setSecrets(t)
 
-	for name, tc := range tests {
-		t.Run(name, func(t *testing.T) {
-			_, err := config.LoadFrom(writeConfig(t, tc.content))
-			require.ErrorContains(t, err, tc.want)
-		})
-	}
+	t.Setenv("MAX_FILE_SIZE", "0")
+	t.Setenv("HTTP_PORT", "0")
+	t.Setenv("THUMBNAIL_SIZES", " ")
+
+	path := writeConfig(t, `{"s3": {"bucket": ""}, "image": {"allowed_mime_types": []}}`)
+
+	cfg, err := config.LoadFrom(path)
+	require.NoError(t, err)
+
+	require.Zero(t, cfg.Image.MaxFileSize)
+	require.Zero(t, cfg.HTTP.Port)
+	require.Empty(t, cfg.Image.ThumbnailSizes)
+	require.Empty(t, cfg.S3.Bucket)
+	require.Empty(t, cfg.Image.AllowedMimeTypes)
 }
 
 func TestSizeString(t *testing.T) {

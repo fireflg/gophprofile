@@ -29,6 +29,9 @@ type Deps struct {
 	Static fs.FS
 }
 
+// multipartOverhead - запас на служебные части multipart-запроса сверх размера самого файла.
+const multipartOverhead = 64 << 10
+
 // NewRouter собирает маршруты сервиса.
 func NewRouter(deps Deps) http.Handler {
 	router := chi.NewRouter()
@@ -48,8 +51,10 @@ func NewRouter(deps Deps) http.Handler {
 
 	router.Get(healthPath, deps.Health.Health)
 
+	uploadLimit := deps.Config.Image.MaxFileSize + multipartOverhead
+
 	router.Route("/api/v1", func(r chi.Router) {
-		r.Post("/avatars", deps.Avatars.Upload)
+		r.With(chimw.RequestSize(uploadLimit)).Post("/avatars", deps.Avatars.Upload)
 		r.Get("/avatars/{id}", deps.Avatars.Get)
 		r.Get("/avatars/{id}/metadata", deps.Avatars.Metadata)
 		r.Delete("/avatars/{id}", deps.Avatars.Delete)

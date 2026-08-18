@@ -51,6 +51,9 @@ func TestNewKafkaPublisherRejectsIncompleteConfig(t *testing.T) {
 
 	_, err = NewKafkaPublisher(config.Kafka{Brokers: []string{"localhost:9092"}})
 	require.ErrorContains(t, err, "topic")
+
+	_, err = NewKafkaPublisher(config.Kafka{Brokers: []string{"localhost:9092"}, Topic: testTopic})
+	require.ErrorContains(t, err, "write_timeout")
 }
 
 func TestPublishSendsEventAsJSON(t *testing.T) {
@@ -100,21 +103,6 @@ func TestPublishReturnsWriterError(t *testing.T) {
 	writer.EXPECT().WriteMessages(gomock.Any(), gomock.Any()).Return(writeErr)
 
 	require.ErrorIs(t, publisher.Publish(t.Context(), testEvent()), writeErr)
-}
-
-func TestPublishSurvivesCancelledRequestContext(t *testing.T) {
-	publisher, writer, _ := newTestPublisher(t)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	writer.EXPECT().
-		WriteMessages(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(ctx context.Context, _ ...kafka.Message) error {
-			return ctx.Err()
-		})
-
-	require.NoError(t, publisher.Publish(ctx, testEvent()))
 }
 
 func TestPingAsksMetadataForTopic(t *testing.T) {

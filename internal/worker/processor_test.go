@@ -32,7 +32,22 @@ func newProcessor(t *testing.T) (*worker.Processor, *mocks.MockAvatarRepository,
 	repo := mocks.NewMockAvatarRepository(ctrl)
 	storage := mocks.NewMockFileStorage(ctrl)
 
-	return worker.NewProcessor(repo, storage, thumbnailSizes, zap.NewNop()), repo, storage
+	processor, err := worker.NewProcessor(repo, storage, thumbnailSizes, zap.NewNop())
+	require.NoError(t, err)
+
+	return processor, repo, storage
+}
+
+func TestNewProcessorRequiresThumbnailSizes(t *testing.T) {
+	ctrl := gomock.NewController(t)
+
+	_, err := worker.NewProcessor(
+		mocks.NewMockAvatarRepository(ctrl),
+		mocks.NewMockFileStorage(ctrl),
+		nil,
+		zap.NewNop(),
+	)
+	require.ErrorContains(t, err, "thumbnail sizes must not be empty")
 }
 
 func pngBytes(t *testing.T, width, height int) []byte {

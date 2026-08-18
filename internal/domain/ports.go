@@ -64,17 +64,3 @@ type FileResult struct {
 	LastModified time.Time
 	Avatar       *Avatar
 }
-
-// AvatarUseCase - сценарии работы с аватарками, которые использует HTTP-слой.
-type AvatarUseCase interface {
-	Upload(ctx context.Context, in UploadInput) (*Avatar, error)
-	GetFile(ctx context.Context, id uuid.UUID, size, format string) (*FileResult, error)
-	GetUserFile(ctx context.Context, userID, size, format string) (*FileResult, error)
-	GetMetadata(ctx context.Context, id uuid.UUID) (*Avatar, error)
-	ListByUser(ctx context.Context, userID string, limit, offset int) ([]*Avatar, error)
-	Delete(ctx context.Context, id uuid.UUID, requesterID string) error
-	DeleteUserAvatar(ctx context.Context, userID, requesterID string) error
-	URL(key string) string
-	MaxFileSize() int64
-	AllowedMimeTypes() []string
-}

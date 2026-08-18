@@ -47,6 +47,8 @@ func run() error {
 
 	go tel.Metrics.Serve(zapLog)
 
+	runLog := logger.Component(zapLog, "worker")
+
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {
 		return err
@@ -58,26 +60,29 @@ func run() error {
 		return err
 	}
 
-	processor := worker.NewProcessor(
+	processor, err := worker.NewProcessor(
 		repository.NewAvatarRepository(pool),
 		storage,
 		cfg.Image.ThumbnailSizes,
 		zapLog,
 	)
+	if err != nil {
+		return err
+	}
 
 	consumer, err := worker.NewConsumer(cfg.Kafka, processor, zapLog)
 	if err != nil {
 		return err
 	}
 
-	zapLog.Info("worker started",
+	runLog.Info("worker started",
 		zap.String("topic", cfg.Kafka.Topic), zap.String("group_id", cfg.Kafka.GroupID))
 
 	if err := consumer.Run(ctx); err != nil {
 		return err
 	}
 
-	zapLog.Info("worker stopped")
+	runLog.Info("worker stopped")
 
 	return nil
 }

@@ -52,6 +52,8 @@ func run() error {
 
 	go tel.Metrics.Serve(zapLog)
 
+	runLog := logger.Component(zapLog, "server")
+
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {
 		return err
@@ -70,7 +72,12 @@ func run() error {
 	defer func() { _ = publisher.Close() }()
 
 	repo := repository.NewAvatarRepository(pool)
-	avatarService := services.NewAvatarService(repo, storage, publisher, cfg.Image, zapLog)
+
+	avatarService, err := services.NewAvatarService(repo, storage, publisher, cfg.Image, zapLog)
+	if err != nil {
+		return err
+	}
+	defer avatarService.Wait()
 
 	if err = metrics.RegisterStorageGauge(repo.TotalStorageBytes); err != nil {
 		return err
@@ -93,18 +100,15 @@ func run() error {
 		Static: static,
 	})
 
-	server := &http.Server{
-		Addr:              cfg.HTTP.Addr(),
-		Handler:           router,
-		ReadHeaderTimeout: cfg.HTTP.ReadTimeout,
-		ReadTimeout:       cfg.HTTP.ReadTimeout,
-		WriteTimeout:      cfg.HTTP.WriteTimeout,
+	server, err := api.NewServer(cfg.HTTP, router)
+	if err != nil {
+		return err
 	}
 
 	errCh := make(chan error, 1)
 
 	go func() {
-		zapLog.Info("http server started",
+		runLog.Info("http server started",
 			zap.String("addr", cfg.HTTP.Addr()), zap.String("env", cfg.App.Env))
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -116,7 +120,7 @@ func run() error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
-		zapLog.Info("shutdown signal received")
+		runLog.Info("shutdown signal received")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.ShutdownTimeout)
@@ -126,7 +130,7 @@ func run() error {
 		return err
 	}
 
-	zapLog.Info("http server stopped")
+	runLog.Info("http server stopped")
 
 	return nil
 }

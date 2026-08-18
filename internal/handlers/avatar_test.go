@@ -18,8 +18,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/domain"
-	"github.com/fireflg/gophprofile/internal/domain/mocks"
 	"github.com/fireflg/gophprofile/internal/handlers"
+	"github.com/fireflg/gophprofile/internal/handlers/mocks"
 )
 
 const maxFileSize = 10 << 20

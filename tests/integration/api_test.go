@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"image"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +18,18 @@ import (
 )
 
 const defaultMaxFileSize = 10 << 20
+
+type countingReader struct {
+	reader io.Reader
+	read   int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	c.read += int64(n)
+
+	return n, err
+}
 
 func processAvatar(t *testing.T, env *testEnv, id string) {
 	t.Helper()
@@ -80,6 +93,20 @@ func TestUploadAvatarTooLarge(t *testing.T) {
 	body := decodeJSON[handlers.ErrorResponse](t, rec)
 	require.Equal(t, "File too large", body.Error)
 	require.Equal(t, int64(1024), body.MaxSize)
+}
+
+func TestUploadAvatarStopsReadingOversizedBody(t *testing.T) {
+	env := newTestEnv(t, 1024)
+
+	req := uploadRequest(t, "user-1", "avatar.png", bytes.Repeat([]byte("x"), 8<<20))
+	counter := &countingReader{reader: req.Body}
+	req.Body = io.NopCloser(counter)
+
+	rec := env.do(req)
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
+	require.Equal(t, "File too large", decodeJSON[handlers.ErrorResponse](t, rec).Error)
+	require.Less(t, counter.read, int64(1<<20))
 }
 
 func TestGetAvatarOriginalWithCaching(t *testing.T) {

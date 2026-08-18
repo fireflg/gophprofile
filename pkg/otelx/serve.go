@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -17,6 +18,9 @@ import (
 
 // metricsReadHeaderTimeout - защита от медленных заголовков на служебном порту.
 const metricsReadHeaderTimeout = 5 * time.Second
+
+// maxPort - верхняя граница диапазона TCP-портов.
+const maxPort = 65535
 
 // MetricsServer отдаёт метрики в формате Prometheus на отдельном порту.
 type MetricsServer struct {
@@ -30,6 +34,14 @@ type MetricsServer struct {
 func NewMetricsServer(ctx context.Context, cfg config.Metrics, registry *prometheus.Registry) (*MetricsServer, error) {
 	if !cfg.Enabled || registry == nil {
 		return nil, nil
+	}
+
+	if cfg.Port <= 0 || cfg.Port > maxPort {
+		return nil, fmt.Errorf("metrics: port must be in range 1-%d, got %d", maxPort, cfg.Port)
+	}
+
+	if !strings.HasPrefix(cfg.Path, "/") {
+		return nil, fmt.Errorf("metrics: path must start with /, got %q", cfg.Path)
 	}
 
 	mux := http.NewServeMux()

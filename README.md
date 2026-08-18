@@ -9,17 +9,31 @@
 Источники по возрастанию приоритета: значения по умолчанию → JSON-файл → переменные окружения.
 Путь к файлу задаётся переменной `CONFIG_FILE`; без неё используются только окружение и умолчания.
 
+Обязательные параметры
+
+| Параметр | Переменная окружения |
+|---|---|
+| `postgres.dsn` | `POSTGRES_DSN` |
+| `s3.access_key` | `S3_ACCESS_KEY` |
+| `s3.secret_key` | `S3_SECRET_KEY` |
+
 ```bash
-cp config.example.json config.json
+cp config.example.json config.json   # подставьте свои реквизиты доступа
 CONFIG_FILE=config.json make run-server
 
 # либо только через окружение
-HTTP_PORT=9090 POSTGRES_DSN=postgres://... make run-server
+POSTGRES_DSN=postgres://... S3_ACCESS_KEY=... S3_SECRET_KEY=... make run-server
 ```
 
 Соответствие ключей и переменных окружения задано в `internal/config/config.go`
 (например, `http.port` → `HTTP_PORT`, `image.thumbnail_sizes` → `THUMBNAIL_SIZES`).
 Списки в переменных окружения перечисляются через запятую.
+
+События публикуются в Kafka в фоне: ответ пользователю не ждёт подтверждения брокера.
+Число одновременных отправок ограничено (`maxPublishInFlight` в
+`internal/services/avatar_service.go`); при исчерпании лимита событие отправляется на
+месте. Предел на одну отправку задаётся `kafka.write_timeout` (`KAFKA_WRITE_TIMEOUT`,
+по умолчанию `5s`).
 
 ## Запуск
 

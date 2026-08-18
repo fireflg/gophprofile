@@ -35,8 +35,17 @@ func NewProcessor(
 	storage domain.FileStorage,
 	sizes []config.Size,
 	log *zap.Logger,
-) *Processor {
-	return &Processor{repo: repo, storage: storage, sizes: sizes, log: log}
+) (*Processor, error) {
+	if len(sizes) == 0 {
+		return nil, errors.New("worker: thumbnail sizes must not be empty")
+	}
+
+	return &Processor{
+		repo:    repo,
+		storage: storage,
+		sizes:   sizes,
+		log:     logger.Component(log, "processor"),
+	}, nil
 }
 
 // Handle разбирает событие и вызывает соответствующий сценарий.

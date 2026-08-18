@@ -126,6 +126,15 @@ func dropContext(fields []zapcore.Field) []zapcore.Field {
 	return kept
 }
 
+// Component возвращает дочерний логгер компонента.
+func Component(log *zap.Logger, name string) *zap.Logger {
+	if log == nil {
+		return zap.NewNop()
+	}
+
+	return log.With(zap.String("component", name))
+}
+
 func isDevelopment(env string) bool {
 	return strings.EqualFold(env, "development") || strings.EqualFold(env, "local")
 }
