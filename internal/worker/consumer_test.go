@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
@@ -245,5 +247,44 @@ func TestRunClosesReaderOnExit(t *testing.T) {
 func TestHandleMessageSkipsMalformedPayload(t *testing.T) {
 	fixture := newConsumerFixture(t)
 
-	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), []byte("{не json")))
+	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), kafka.Message{Value: []byte("{не json")}))
+}
+
+func TestHandleMessageLogsMalformedPayloadWithCoordinates(t *testing.T) {
+	fixture := newConsumerFixture(t)
+
+	core, logs := observer.New(zapcore.ErrorLevel)
+	fixture.consumer.log = zap.New(core)
+
+	msg := kafka.Message{Topic: "avatars.events", Partition: 3, Offset: 42, Value: []byte("{не json")}
+
+	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), msg))
+	require.Equal(t, 1, logs.Len())
+
+	fields := logs.All()[0].ContextMap()
+	require.Equal(t, "malformed event payload", logs.All()[0].Message)
+	require.Equal(t, "avatars.events", fields["topic"])
+	require.EqualValues(t, 3, fields["partition"])
+	require.EqualValues(t, 42, fields["offset"])
+}
+
+func TestHandleMessageLogsFailureWithUserID(t *testing.T) {
+	fixture := newConsumerFixture(t)
+
+	core, logs := observer.New(zapcore.ErrorLevel)
+	fixture.consumer.log = zap.New(core)
+
+	event := uploadedMessageEvent()
+
+	fixture.repo.EXPECT().
+		GetByID(gomock.Any(), event.AvatarID).
+		Return(nil, errors.New("база недоступна"))
+
+	require.Error(t, fixture.consumer.HandleMessage(t.Context(), eventMessage(t, event)))
+	require.Equal(t, 1, logs.Len())
+
+	fields := logs.All()[0].ContextMap()
+	require.Equal(t, "handle message", logs.All()[0].Message)
+	require.Equal(t, event.UserID, fields["user_id"])
+	require.Contains(t, fields["error"], "база недоступна")
 }

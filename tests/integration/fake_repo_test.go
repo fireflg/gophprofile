@@ -116,6 +116,20 @@ func (r *fakeRepo) SoftDelete(_ context.Context, id uuid.UUID) error {
 	})
 }
 
+func (r *fakeRepo) TotalStorageBytes(context.Context) (int64, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var total int64
+	for _, avatar := range r.avatars {
+		if avatar.DeletedAt == nil {
+			total += avatar.SizeBytes
+		}
+	}
+
+	return total, nil
+}
+
 func (r *fakeRepo) Ping(context.Context) error { return nil }
 
 func (r *fakeRepo) update(id uuid.UUID, mutate func(*domain.Avatar)) error {

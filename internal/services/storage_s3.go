@@ -12,6 +12,9 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
@@ -41,9 +44,10 @@ func NewS3Storage(_ context.Context, cfg config.S3) (*S3Storage, error) {
 	}
 
 	client, err := minio.New(cfg.Endpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.UseSSL,
-		Region: cfg.Region,
+		Creds:     credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
+		Secure:    cfg.UseSSL,
+		Region:    cfg.Region,
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("s3: new client: %w", err)
@@ -57,9 +61,19 @@ func (s *S3Storage) Put(ctx context.Context, key string, r io.Reader, size int64
 	ctx, cancel := context.WithTimeout(ctx, putObjectTimeout)
 	defer cancel()
 
+	ctx, span := tracer.Start(ctx, "s3.put", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("s3.bucket", s.bucket),
+		attribute.String("s3.key", key),
+		attribute.Int64("s3.size", size),
+		attribute.String("s3.content_type", contentType),
+	)
+
 	_, err := s.client.PutObject(ctx, s.bucket, key, r, size, minio.PutObjectOptions{ContentType: contentType})
 	if err != nil {
-		return fmt.Errorf("s3: put %s: %w", key, err)
+		return recordError(span, fmt.Errorf("s3: put %s: %w", key, err))
 	}
 
 	return nil
@@ -67,17 +81,27 @@ func (s *S3Storage) Put(ctx context.Context, key string, r io.Reader, size int64
 
 // Get читает объект из хранилища.
 func (s *S3Storage) Get(ctx context.Context, key string) (*domain.Object, error) {
+	ctx, span := tracer.Start(ctx, "s3.get", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("s3.bucket", s.bucket),
+		attribute.String("s3.key", key),
+	)
+
 	object, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, mapGetError(key, err)
+		return nil, recordError(span, mapGetError(key, err))
 	}
 
 	info, err := object.Stat()
 	if err != nil {
 		_ = object.Close()
 
-		return nil, mapGetError(key, err)
+		return nil, recordError(span, mapGetError(key, err))
 	}
+
+	span.SetAttributes(attribute.Int64("s3.size", info.Size))
 
 	return &domain.Object{
 		Body:         object,
@@ -90,6 +114,14 @@ func (s *S3Storage) Get(ctx context.Context, key string) (*domain.Object, error)
 
 // Delete удаляет объекты по ключам; отсутствующий ключ — не ошибка.
 func (s *S3Storage) Delete(ctx context.Context, keys ...string) error {
+	ctx, span := tracer.Start(ctx, "s3.delete", trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("s3.bucket", s.bucket),
+		attribute.Int("s3.keys", len(keys)),
+	)
+
 	for _, key := range keys {
 		if key == "" {
 			continue
@@ -100,7 +132,7 @@ func (s *S3Storage) Delete(ctx context.Context, keys ...string) error {
 				continue
 			}
 
-			return fmt.Errorf("s3: delete %s: %w", key, err)
+			return recordError(span, fmt.Errorf("s3: delete %s: %w", key, err))
 		}
 	}
 

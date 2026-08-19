@@ -59,21 +59,21 @@ func NewAvatarHandler(service AvatarUseCase, log *zap.Logger) *AvatarHandler {
 func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	userID := userIDFromRequest(r)
 	if userID == "" {
-		h.writeError(w, domain.ErrUserIDRequired)
+		h.writeError(w, r, domain.ErrUserIDRequired)
 
 		return
 	}
 
 	file, fileHeader, err := r.FormFile("file")
 	if err != nil {
-		h.writeError(w, formFileError(err))
+		h.writeError(w, r, formFileError(err))
 
 		return
 	}
 	defer func() { _ = file.Close() }()
 
 	if fileHeader.Size > h.service.MaxFileSize() {
-		h.writeError(w, domain.ErrFileTooLarge)
+		h.writeError(w, r, domain.ErrFileTooLarge)
 
 		return
 	}
@@ -85,19 +85,19 @@ func (h *AvatarHandler) Upload(w http.ResponseWriter, r *http.Request) {
 		Reader:   file,
 	})
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
-	h.writeJSON(w, http.StatusCreated, newAvatarResponse(avatar, h.service.URL))
+	h.writeJSON(w, r, http.StatusCreated, newAvatarResponse(avatar, h.service.URL))
 }
 
 // Get обрабатывает GET /api/v1/avatars/{avatar_id}.
 func (h *AvatarHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id, err := parseAvatarID(chi.URLParam(r, "id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -106,7 +106,7 @@ func (h *AvatarHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.service.GetFile(r.Context(), id, query.Get("size"), query.Get("format"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -118,7 +118,7 @@ func (h *AvatarHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *AvatarHandler) GetUserAvatar(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "user_id")
 	if userID == "" {
-		h.writeError(w, domain.ErrAvatarNotFound)
+		h.writeError(w, r, domain.ErrAvatarNotFound)
 
 		return
 	}
@@ -127,7 +127,7 @@ func (h *AvatarHandler) GetUserAvatar(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.service.GetUserFile(r.Context(), userID, query.Get("size"), query.Get("format"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -139,19 +139,19 @@ func (h *AvatarHandler) GetUserAvatar(w http.ResponseWriter, r *http.Request) {
 func (h *AvatarHandler) Metadata(w http.ResponseWriter, r *http.Request) {
 	id, err := parseAvatarID(chi.URLParam(r, "id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	avatar, err := h.service.GetMetadata(r.Context(), id)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
-	h.writeJSON(w, http.StatusOK, newMetadataResponse(avatar, h.service.URL))
+	h.writeJSON(w, r, http.StatusOK, newMetadataResponse(avatar, h.service.URL))
 }
 
 // ListUserAvatars обрабатывает GET /api/v1/users/{user_id}/avatars.
@@ -161,7 +161,7 @@ func (h *AvatarHandler) ListUserAvatars(w http.ResponseWriter, r *http.Request) 
 
 	avatars, err := h.service.ListByUser(r.Context(), userID, limit, offset)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -171,20 +171,20 @@ func (h *AvatarHandler) ListUserAvatars(w http.ResponseWriter, r *http.Request) 
 		items = append(items, newAvatarResponse(avatar, h.service.URL))
 	}
 
-	h.writeJSON(w, http.StatusOK, ListResponse{Items: items, Limit: limit, Offset: offset})
+	h.writeJSON(w, r, http.StatusOK, ListResponse{Items: items, Limit: limit, Offset: offset})
 }
 
 // Delete обрабатывает DELETE /api/v1/avatars/{avatar_id}.
 func (h *AvatarHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id, err := parseAvatarID(chi.URLParam(r, "id"))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
 
 	if err := h.service.Delete(r.Context(), id, userIDFromRequest(r)); err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -196,7 +196,7 @@ func (h *AvatarHandler) Delete(w http.ResponseWriter, r *http.Request) {
 func (h *AvatarHandler) DeleteUserAvatar(w http.ResponseWriter, r *http.Request) {
 	err := h.service.DeleteUserAvatar(r.Context(), chi.URLParam(r, "user_id"), userIDFromRequest(r))
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, r, err)
 
 		return
 	}
@@ -241,18 +241,21 @@ func (h *AvatarHandler) writeFile(w http.ResponseWriter, r *http.Request, result
 	}
 
 	if _, err := io.Copy(w, result.Body); err != nil {
-		h.log.Error("stream avatar file", zap.Error(err))
+		logger.WithContext(r.Context(), h.log).Error("stream avatar file", zap.Error(err))
 	}
 }
 
-func (h *AvatarHandler) writeJSON(w http.ResponseWriter, code int, payload any) {
+func (h *AvatarHandler) writeJSON(w http.ResponseWriter, r *http.Request, code int, payload any) {
 	if err := WriteJSON(w, code, payload); err != nil {
-		h.log.Error("write json response", zap.Error(err))
+		logger.WithContext(r.Context(), h.log).Error("write json response", zap.Error(err))
 	}
 }
 
-func (h *AvatarHandler) writeError(w http.ResponseWriter, err error) {
-	WriteError(w, h.log, err, h.service.MaxFileSize(), h.service.AllowedMimeTypes())
+func (h *AvatarHandler) writeError(w http.ResponseWriter, r *http.Request, err error) {
+	WriteError(r.Context(), w, h.log, err, Limits{
+		MaxFileSize:      h.service.MaxFileSize(),
+		AllowedMimeTypes: h.service.AllowedMimeTypes(),
+	})
 }
 
 // userIDFromRequest достаёт идентификатор пользователя из заголовка X-User-ID.

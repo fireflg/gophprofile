@@ -12,9 +12,11 @@ import (
 	"github.com/fireflg/gophprofile/internal/api"
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/handlers"
+	"github.com/fireflg/gophprofile/internal/metrics"
 	"github.com/fireflg/gophprofile/internal/repository"
 	"github.com/fireflg/gophprofile/internal/services"
 	"github.com/fireflg/gophprofile/pkg/logger"
+	"github.com/fireflg/gophprofile/pkg/otelx"
 	"github.com/fireflg/gophprofile/web"
 )
 
@@ -25,16 +27,32 @@ func run() error {
 		return err
 	}
 
-	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	tel, err := otelx.Setup(ctx, cfg.OTel, cfg.Metrics)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = zapLog.Sync() }()
+
+	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
+	if err != nil {
+		return err
+	}
+
+	otelx.SetErrorHandler(zapLog)
+
+	defer func() {
+		if shutdownErr := tel.Shutdown(ctx); shutdownErr != nil {
+			zapLog.Error("shutdown telemetry", zap.Error(shutdownErr))
+		}
+
+		_ = zapLog.Sync()
+	}()
+
+	go tel.Metrics.Serve(zapLog)
 
 	runLog := logger.Component(zapLog, "server")
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {
@@ -60,6 +78,10 @@ func run() error {
 		return err
 	}
 	defer avatarService.Wait()
+
+	if err = metrics.RegisterStorageGauge(repo.TotalStorageBytes); err != nil {
+		return err
+	}
 
 	static, err := web.Static()
 	if err != nil {

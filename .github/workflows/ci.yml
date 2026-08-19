@@ -84,7 +84,7 @@ jobs:
         run: docker compose -f docker/docker-compose.yml config -q
 
       - name: Build server image
-        run: docker build -f docker/Dockerfile --build-arg APP=server .
+        run: docker build -f docker/application/Dockerfile --build-arg APP=server .
 
       - name: Build worker image
-        run: docker build -f docker/Dockerfile --build-arg APP=worker .
+        run: docker build -f docker/application/Dockerfile --build-arg APP=worker .

@@ -1,14 +1,18 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 // ErrorResponse — единый формат ошибки API.
@@ -31,16 +35,32 @@ func WriteJSON(w http.ResponseWriter, code int, payload any) error {
 }
 
 // WriteError переводит доменную ошибку в HTTP-ответ.
-func WriteError(w http.ResponseWriter, log *zap.Logger, err error, maxFileSize int64, allowed []string) {
-	code, payload := MapError(err, maxFileSize, allowed)
+func WriteError(ctx context.Context, w http.ResponseWriter, log *zap.Logger, err error, limits Limits) {
+	code, payload := MapError(err, limits.MaxFileSize, limits.AllowedMimeTypes)
 
-	if code >= http.StatusInternalServerError && log != nil {
-		log.Error("request failed", zap.Error(err))
+	if code >= http.StatusInternalServerError {
+		recordSpanError(ctx, err)
+
+		logger.WithContext(ctx, log).Error("request failed", zap.Error(err))
 	}
 
-	if writeErr := WriteJSON(w, code, payload); writeErr != nil && log != nil {
-		log.Error("write error response", zap.Error(writeErr))
+	if writeErr := WriteJSON(w, code, payload); writeErr != nil {
+		logger.WithContext(ctx, log).Error("write error response", zap.Error(writeErr))
 	}
+}
+
+// Limits - ограничения загрузки, попадающие в тело ошибки.
+type Limits struct {
+	MaxFileSize      int64
+	AllowedMimeTypes []string
+}
+
+// recordSpanError помечает спан отказом, иначе 500ка выглядит успешной.
+func recordSpanError(ctx context.Context, err error) {
+	span := trace.SpanFromContext(ctx)
+
+	span.RecordError(err)
+	span.SetStatus(codes.Error, err.Error())
 }
 
 // MapError сопоставляет доменную ошибку с HTTP-кодом и телом ответа.

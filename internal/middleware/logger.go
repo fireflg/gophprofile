@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/fireflg/gophprofile/pkg/ctxmeta"
 	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
@@ -29,20 +31,31 @@ func Logger(log *zap.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rw, r)
 
-			fields := []zap.Field{
+			entry := log.Check(levelFor(rw.Status()), "request")
+			if entry == nil {
+				return
+			}
+
+			fields := append(logger.ContextFields(r.Context()),
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
 				zap.Int("status", rw.Status()),
 				zap.Int("bytes", rw.bytes),
 				zap.Duration("duration", time.Since(start)),
 				zap.String("remote_addr", r.RemoteAddr),
-			}
+			)
 
 			if id := RequestIDFrom(r.Context()); id != "" {
 				fields = append(fields, zap.String("request_id", id))
 			}
 
-			log.Check(levelFor(rw.Status()), "request").Write(fields...)
+			if ctxmeta.UserIDFrom(r.Context()) == "" {
+				if id := chi.URLParam(r, "user_id"); id != "" {
+					fields = append(fields, zap.String("user_id", id))
+				}
+			}
+
+			entry.Write(fields...)
 		})
 	}
 }

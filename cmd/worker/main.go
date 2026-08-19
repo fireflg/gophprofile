@@ -2,13 +2,14 @@
 package main
 
 import (
-	"log"
 	"os"
+
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 func main() {
 	if err := run(); err != nil {
-		log.Printf("worker stopped with error: %v", err)
+		logger.FatalStartup("worker stopped with error", err)
 		os.Exit(1)
 	}
 }

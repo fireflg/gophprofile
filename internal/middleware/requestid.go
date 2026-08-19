@@ -10,6 +10,9 @@ import (
 // HeaderRequestID - заголовок сквозного идентификатора запроса.
 const HeaderRequestID = "X-Request-ID"
 
+// maxRequestIDLen - предел длины идентификатора, принимаемого от клиента.
+const maxRequestIDLen = 64
+
 type contextKey struct{ name string }
 
 var requestIDKey = &contextKey{name: "request-id"}
@@ -17,7 +20,7 @@ var requestIDKey = &contextKey{name: "request-id"}
 // RequestID проставляет идентификатор запроса: берёт из заголовка.
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		id := r.Header.Get(HeaderRequestID)
+		id := sanitizeID(r.Header.Get(HeaderRequestID), maxRequestIDLen)
 		if id == "" {
 			id = uuid.NewString()
 		}
