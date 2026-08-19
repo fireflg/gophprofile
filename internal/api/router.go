@@ -41,8 +41,8 @@ func NewRouter(deps Deps) http.Handler {
 		middleware.UserID(handlers.HeaderUserID),
 		middleware.Trace,
 		middleware.Metrics(healthPath),
-		chimw.Recoverer,
 		middleware.Logger(deps.Logger),
+		middleware.Recover(deps.Logger),
 		middleware.Gzip(gzip.DefaultCompression),
 	)
 

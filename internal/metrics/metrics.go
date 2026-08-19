@@ -13,8 +13,11 @@ import (
 
 // Значения лейбла status у прикладных метрик.
 const (
-	statusSuccess = "success"
-	statusError   = "error"
+	StatusSuccess     = "success"
+	StatusClientError = "client_error"
+	StatusSkipped     = "skipped"
+	StatusError       = "error"
+	StatusMalformed   = "malformed"
 )
 
 // scopeName - instrumentation scope; попадает в otel_scope_name при экспорте.
@@ -46,22 +49,59 @@ var (
 
 	httpErrors = must(meter.Int64Counter("avatars_http_errors",
 		metric.WithDescription("Total number of HTTP responses with status 4xx or 5xx")))
+
+	httpPanics = must(meter.Int64Counter("avatars_http_panics",
+		metric.WithDescription("Total number of panics recovered in HTTP handlers")))
+
+	consumerMessages = must(meter.Int64Counter("avatars_consumer_messages",
+		metric.WithDescription("Total number of consumed Kafka messages")))
+
+	dependencyUp = must(meter.Int64Gauge("avatars_dependency_up",
+		metric.WithDescription("Dependency state seen by the health check: 1 - ok, 0 - fail")))
 )
 
 // ObserveUpload записывает исход и длительность загрузки аватарки.
-func ObserveUpload(ctx context.Context, started time.Time, err error) {
-	attrs := metric.WithAttributes(attribute.String("status", status(err)))
+func ObserveUpload(ctx context.Context, started time.Time, status string) {
+	attrs := metric.WithAttributes(attribute.String("status", status))
 
 	uploadsTotal.Add(ctx, 1, attrs)
 	uploadDuration.Record(ctx, time.Since(started).Seconds(), attrs)
 }
 
-// ObserveProcessing записывает исход и длительность нарезки миниатюр.
-func ObserveProcessing(ctx context.Context, started time.Time, err error) {
-	attrs := metric.WithAttributes(attribute.String("status", status(err)))
+// ObserveProcessing записывает исход и длительность обработки события воркером.
+func ObserveProcessing(ctx context.Context, started time.Time, eventType, status string) {
+	attrs := metric.WithAttributes(
+		attribute.String("event_type", eventType),
+		attribute.String("status", status),
+	)
 
 	thumbnailsTotal.Add(ctx, 1, attrs)
+
+	if status == StatusSkipped {
+		return
+	}
+
 	processingDuration.Record(ctx, time.Since(started).Seconds(), attrs)
+}
+
+// ObserveConsumedMessage считает сообщение, прочитанное из брокера.
+func ObserveConsumedMessage(ctx context.Context, status string) {
+	consumerMessages.Add(ctx, 1, metric.WithAttributes(attribute.String("status", status)))
+}
+
+// ObserveDependency публикует состояние внешней зависимости по данным хелсчека.
+func ObserveDependency(ctx context.Context, component string, up bool) {
+	var value int64
+	if up {
+		value = 1
+	}
+
+	dependencyUp.Record(ctx, value, metric.WithAttributes(attribute.String("component", component)))
+}
+
+// ObservePanic считает панику, перехваченную HTTP-прослойкой.
+func ObservePanic(ctx context.Context, route string) {
+	httpPanics.Add(ctx, 1, metric.WithAttributes(attribute.String("route", route)))
 }
 
 // ObserveRequest записывает обслуженный HTTP-запрос.
@@ -110,12 +150,27 @@ func RegisterStorageGauge(observe func(context.Context) (int64, error)) error {
 	return err
 }
 
-func status(err error) string {
+// RegisterConsumerLagGauge регистрирует асинхронный gauge на отставание консьюмера.
+func RegisterConsumerLagGauge(observe func() int64) error {
+	_, err := meter.Int64ObservableGauge("avatars_consumer_lag",
+		metric.WithDescription("Consumer group lag in messages"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(observe())
+
+			return nil
+		}),
+	)
+
+	return err
+}
+
+// Status - исход операции по ошибке: success либо error.
+func Status(err error) string {
 	if err != nil {
-		return statusError
+		return StatusError
 	}
 
-	return statusSuccess
+	return StatusSuccess
 }
 
 func must[T any](instrument T, err error) T {

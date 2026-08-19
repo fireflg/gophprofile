@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 
 	"github.com/segmentio/kafka-go"
 	"go.opentelemetry.io/otel"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/internal/metrics"
 	"github.com/fireflg/gophprofile/pkg/ctxmeta"
 	"github.com/fireflg/gophprofile/pkg/logger"
 	"github.com/fireflg/gophprofile/pkg/otelx"
@@ -29,6 +32,11 @@ type KafkaReader interface {
 	FetchMessage(ctx context.Context) (kafka.Message, error)
 	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
 	Close() error
+}
+
+// statsReader - источник статистики чтения; его реализует kafka.Reader, но не мок.
+type statsReader interface {
+	Stats() kafka.ReaderStats
 }
 
 // Consumer - потребитель событий из Kafka.
@@ -52,13 +60,38 @@ func NewConsumer(cfg config.Kafka, processor *Processor, log *zap.Logger) (*Cons
 		return nil, errors.New("kafka: group id is required")
 	}
 
+	readerLog := logger.Component(log, "kafka_reader")
+
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers: cfg.Brokers,
-		Topic:   cfg.Topic,
-		GroupID: cfg.GroupID,
+		Brokers:     cfg.Brokers,
+		Topic:       cfg.Topic,
+		GroupID:     cfg.GroupID,
+		Logger:      kafkaLogger(readerLog.Debug),
+		ErrorLogger: kafkaLogger(readerLog.Error),
 	})
 
-	return &Consumer{reader: reader, processor: processor, log: logger.Component(log, "consumer")}, nil
+	consumer := &Consumer{reader: reader, processor: processor, log: logger.Component(log, "consumer")}
+
+	if err := metrics.RegisterConsumerLagGauge(consumer.lag); err != nil {
+		return nil, fmt.Errorf("register consumer lag gauge: %w", err)
+	}
+
+	return consumer, nil
+}
+
+func kafkaLogger(write func(string, ...zap.Field)) kafka.LoggerFunc {
+	return func(msg string, args ...any) {
+		write(strings.TrimSpace(fmt.Sprintf(msg, args...)))
+	}
+}
+
+func (c *Consumer) lag() int64 {
+	reader, ok := c.reader.(statsReader)
+	if !ok {
+		return 0
+	}
+
+	return reader.Stats().Lag
 }
 
 // Run читает события из брокера до отмены контекста или закрытия reader.
@@ -80,12 +113,6 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 
 		if err := c.HandleMessage(ctx, msg); err != nil {
-			c.log.Error("handle message",
-				zap.Error(err),
-				zap.String("topic", msg.Topic),
-				zap.Int("partition", msg.Partition),
-				zap.Int64("offset", msg.Offset))
-
 			continue
 		}
 
@@ -109,15 +136,14 @@ func (c *Consumer) HandleMessage(ctx context.Context, msg kafka.Message) error {
 	span.SetAttributes(
 		semconv.MessagingSystemKafka,
 		semconv.MessagingDestinationName(msg.Topic),
-		semconv.MessagingKafkaOffset(int(msg.Offset)),
-		attribute.Int("messaging.kafka.partition", msg.Partition),
+		semconv.MessagingDestinationPartitionID(strconv.Itoa(msg.Partition)),
+		attribute.Int64("messaging.kafka.offset", msg.Offset),
 	)
-
-	log := logger.WithContext(ctx, c.log)
 
 	var event domain.Event
 	if err := json.Unmarshal(msg.Value, &event); err != nil {
-		log.Error("malformed event payload", zap.Error(err))
+		metrics.ObserveConsumedMessage(ctx, metrics.StatusMalformed)
+		c.logMessageError(ctx, msg, "malformed event payload", err)
 
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -136,9 +162,24 @@ func (c *Consumer) HandleMessage(ctx context.Context, msg kafka.Message) error {
 		span.SetAttributes(attribute.String("user_id", event.UserID))
 	}
 
-	if err := c.processor.Handle(ctx, event); err != nil {
-		return recordError(span, fmt.Errorf("handle event %s (%s): %w", event.Type, event.AvatarID, err))
+	err := c.processor.Handle(ctx, event)
+
+	metrics.ObserveConsumedMessage(ctx, metrics.Status(err))
+
+	if err != nil {
+		err = fmt.Errorf("handle event %s (%s): %w", event.Type, event.AvatarID, err)
+		c.logMessageError(ctx, msg, "handle message", err)
+
+		return recordError(span, err)
 	}
 
 	return nil
+}
+
+func (c *Consumer) logMessageError(ctx context.Context, msg kafka.Message, message string, err error) {
+	logger.WithContext(ctx, c.log).Error(message,
+		zap.Error(err),
+		zap.String("topic", msg.Topic),
+		zap.Int("partition", msg.Partition),
+		zap.Int64("offset", msg.Offset))
 }

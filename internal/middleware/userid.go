@@ -2,10 +2,12 @@ package middleware
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/fireflg/gophprofile/pkg/ctxmeta"
 )
+
+// maxUserIDLen - предел длины идентификатора пользователя из заголовка.
+const maxUserIDLen = 128
 
 // UserID переносит идентификатор пользователя из заголовка в контекст.
 //
@@ -15,7 +17,7 @@ import (
 func UserID(header string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			id := strings.TrimSpace(r.Header.Get(header))
+			id := sanitizeID(r.Header.Get(header), maxUserIDLen)
 			if id == "" {
 				next.ServeHTTP(w, r)
 

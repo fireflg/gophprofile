@@ -21,6 +21,8 @@ import (
 	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
+var errSkipped = errors.New("event skipped")
+
 // Processor выполняет бизнес-логику обработки события.
 type Processor struct {
 	repo    domain.AvatarRepository
@@ -50,21 +52,53 @@ func NewProcessor(
 
 // Handle разбирает событие и вызывает соответствующий сценарий.
 func (p *Processor) Handle(ctx context.Context, event domain.Event) error {
+	started := time.Now()
+
+	var err error
+
 	switch event.Type {
 	case domain.EventAvatarUploaded:
-		return p.handleUploaded(ctx, event)
+		err = p.handleUploaded(ctx, event)
 	case domain.EventAvatarDeleted:
-		return p.handleDeleted(ctx, event)
+		err = p.handleDeleted(ctx, event)
 	default:
-		p.log.Warn("unknown event type",
+		logger.WithContext(ctx, p.log).Warn("unknown event type",
 			zap.String("type", string(event.Type)), zap.String("avatar_id", event.AvatarID.String()))
 
+		err = errSkipped
+	}
+
+	metrics.ObserveProcessing(ctx, started, eventTypeLabel(event.Type), processingStatus(err))
+
+	if errors.Is(err, errSkipped) {
 		return nil
+	}
+
+	return err
+}
+
+// eventTypeLabel схлопывает чужие типы событий в unknown, чтобы не растить кардинальность.
+func eventTypeLabel(eventType domain.EventType) string {
+	switch eventType {
+	case domain.EventAvatarUploaded, domain.EventAvatarDeleted:
+		return string(eventType)
+	default:
+		return "unknown"
+	}
+}
+
+// processingStatus - исход обработки события для лейбла метрики.
+func processingStatus(err error) string {
+	switch {
+	case errors.Is(err, errSkipped):
+		return metrics.StatusSkipped
+	default:
+		return metrics.Status(err)
 	}
 }
 
 // handleUploaded нарезает миниатюры оригинала и сохраняет их ключи в БД.
-func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) (err error) {
+func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) error {
 	ctx, span := tracer.Start(ctx, "process_uploaded")
 	defer span.End()
 
@@ -72,9 +106,6 @@ func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) (err
 		attribute.String("avatar.id", event.AvatarID.String()),
 		attribute.Int("thumbnail.count", len(p.sizes)),
 	)
-
-	started := time.Now()
-	defer func() { metrics.ObserveProcessing(ctx, started, err) }()
 
 	log := logger.WithContext(ctx, p.log)
 
@@ -84,7 +115,7 @@ func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) (err
 			log.Info("avatar is gone, event skipped",
 				zap.String("avatar_id", event.AvatarID.String()))
 
-			return nil
+			return errSkipped
 		}
 
 		return recordError(span, err)
@@ -94,7 +125,7 @@ func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) (err
 		log.Info("avatar already processed, duplicate skipped",
 			zap.String("avatar_id", event.AvatarID.String()))
 
-		return nil
+		return errSkipped
 	}
 
 	if err = p.repo.SetProcessingStatus(ctx, event.AvatarID, domain.ProcessingStatusProcessing); err != nil {

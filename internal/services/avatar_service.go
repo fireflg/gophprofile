@@ -68,13 +68,47 @@ func NewAvatarService(
 
 // Upload валидирует файл, кладёт оригинал в хранилище и ставит задачу на обработку.
 func (s *AvatarService) Upload(ctx context.Context, in domain.UploadInput) (*domain.Avatar, error) {
+	ctx, span := tracer.Start(ctx, "upload_avatar")
+	defer span.End()
+
+	span.SetAttributes(attribute.Int64("file.size", in.Size))
+
 	started := time.Now()
 
 	avatar, err := s.upload(ctx, in)
 
-	metrics.ObserveUpload(ctx, started, err)
+	status := uploadStatus(err)
 
-	return avatar, err
+	metrics.ObserveUpload(ctx, started, status)
+
+	if status == metrics.StatusError {
+		return nil, recordError(span, err)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	span.SetAttributes(attribute.String("avatar.id", avatar.ID.String()))
+
+	return avatar, nil
+}
+
+func uploadStatus(err error) string {
+	switch {
+	case err == nil:
+		return metrics.StatusSuccess
+
+	case errors.Is(err, domain.ErrUserIDRequired),
+		errors.Is(err, domain.ErrFileRequired),
+		errors.Is(err, domain.ErrEmptyFile),
+		errors.Is(err, domain.ErrFileTooLarge),
+		errors.Is(err, domain.ErrUnsupportedFormat):
+		return metrics.StatusClientError
+
+	default:
+		return metrics.StatusError
+	}
 }
 
 func (s *AvatarService) upload(ctx context.Context, in domain.UploadInput) (*domain.Avatar, error) {
@@ -164,7 +198,7 @@ func (s *AvatarService) GetFile(ctx context.Context, id uuid.UUID, size, format 
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("avatar_id", id.String()),
+		attribute.String("avatar.id", id.String()),
 		attribute.String("size", size),
 		attribute.String("format", format),
 	)
@@ -206,7 +240,7 @@ func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, requesterID st
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("avatar_id", id.String()),
+		attribute.String("avatar.id", id.String()),
 		attribute.String("requester_id", requesterID),
 	)
 

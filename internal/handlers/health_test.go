@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,50 @@ func TestHealthLogsErrorDetailsInsteadOfExposingThem(t *testing.T) {
 	require.Equal(t, "health_handler", fields["component"])
 	require.Equal(t, "s3", fields["check"])
 	require.Contains(t, fields["error"], "10.0.0.7:9000")
+}
+
+func TestHealthLogsOnlyStateChanges(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+
+	var down atomic.Bool
+
+	down.Store(true)
+
+	handler := handlers.NewHealthHandler(zap.New(core),
+		handlers.Check{Name: "s3", Probe: func(context.Context) error {
+			if down.Load() {
+				return errors.New("bucket недоступен")
+			}
+
+			return nil
+		}},
+	)
+
+	probe := func() {
+		handler.Health(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+	}
+
+	probe()
+	probe()
+
+	require.Len(t, logs.FilterMessage("dependency is down").All(), 1)
+
+	down.Store(false)
+
+	probe()
+	probe()
+
+	require.Len(t, logs.FilterMessage("dependency is down").All(), 1)
+	require.Len(t, logs.FilterMessage("dependency is back").All(), 1)
+}
+
+func TestHealthDoesNotLogHealthyDependencyOnStartup(t *testing.T) {
+	core, logs := observer.New(zapcore.DebugLevel)
+	handler := handlers.NewHealthHandler(zap.New(core), handlers.Check{Name: "postgres", Probe: okProbe})
+
+	handler.Health(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	require.Zero(t, logs.Len())
 }
 
 func TestHealthWithoutChecks(t *testing.T) {

@@ -43,11 +43,11 @@ func run() error {
 	otelx.SetErrorHandler(zapLog)
 
 	defer func() {
-		_ = zapLog.Sync()
-
 		if shutdownErr := tel.Shutdown(ctx); shutdownErr != nil {
 			zapLog.Error("shutdown telemetry", zap.Error(shutdownErr))
 		}
+
+		_ = zapLog.Sync()
 	}()
 
 	go tel.Metrics.Serve(zapLog)

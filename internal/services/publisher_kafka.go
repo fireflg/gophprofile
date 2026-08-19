@@ -82,7 +82,7 @@ func (p *KafkaPublisher) Publish(ctx context.Context, event domain.Event) error 
 		semconv.MessagingSystemKafka,
 		semconv.MessagingDestinationName(p.topic),
 		attribute.String("event.type", string(event.Type)),
-		attribute.String("avatar_id", event.AvatarID.String()),
+		attribute.String("avatar.id", event.AvatarID.String()),
 	)
 
 	payload, err := json.Marshal(event)

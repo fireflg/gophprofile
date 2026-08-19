@@ -31,14 +31,19 @@ func Logger(log *zap.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rw, r)
 
-			fields := []zap.Field{
+			entry := log.Check(levelFor(rw.Status()), "request")
+			if entry == nil {
+				return
+			}
+
+			fields := append(logger.ContextFields(r.Context()),
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
 				zap.Int("status", rw.Status()),
 				zap.Int("bytes", rw.bytes),
 				zap.Duration("duration", time.Since(start)),
 				zap.String("remote_addr", r.RemoteAddr),
-			}
+			)
 
 			if id := RequestIDFrom(r.Context()); id != "" {
 				fields = append(fields, zap.String("request_id", id))
@@ -50,9 +55,7 @@ func Logger(log *zap.Logger) func(http.Handler) http.Handler {
 				}
 			}
 
-			entryLog := logger.WithContext(r.Context(), log)
-
-			entryLog.Check(levelFor(rw.Status()), "request").Write(fields...)
+			entry.Write(fields...)
 		})
 	}
 }

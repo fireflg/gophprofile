@@ -8,13 +8,21 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/fireflg/gophprofile/pkg/ctxmeta"
+	"github.com/fireflg/gophprofile/pkg/otelx"
 )
+
+// HeaderTraceID - идентификатор трейса в ответе: по нему запрос находят в трейсах.
+const HeaderTraceID = "X-Trace-Id"
 
 // Trace дополняет спан, открытый otelhttp, данными маршрутизации.
 func Trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		span := trace.SpanFromContext(ctx)
+
+		if traceID := otelx.TraceIDFrom(ctx); traceID != "" {
+			w.Header().Set(HeaderTraceID, traceID)
+		}
 
 		if id := RequestIDFrom(ctx); id != "" {
 			span.SetAttributes(attribute.String("request_id", id))

@@ -4,6 +4,7 @@ package logger
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"go.opentelemetry.io/contrib/bridges/otelzap"
@@ -55,6 +56,11 @@ func WithContext(ctx context.Context, l *zap.Logger) *zap.Logger {
 		return nil
 	}
 
+	return l.With(ContextFields(ctx)...)
+}
+
+// ContextFields возвращает поля корреляции: контекст, идентификаторы трассы и пользователя.
+func ContextFields(ctx context.Context) []zap.Field {
 	fields := []zap.Field{zap.Any(contextField, ctx)}
 
 	if traceID := otelx.TraceIDFrom(ctx); traceID != "" {
@@ -67,7 +73,7 @@ func WithContext(ctx context.Context, l *zap.Logger) *zap.Logger {
 		fields = append(fields, zap.String("user_id", userID))
 	}
 
-	return l.With(fields...)
+	return fields
 }
 
 // ctxFilterCore выбрасывает поле с контекстом перед записью в stdout.
@@ -133,6 +139,25 @@ func Component(log *zap.Logger, name string) *zap.Logger {
 	}
 
 	return log.With(zap.String("component", name))
+}
+
+// FatalStartup сообщает об отказе старта тем же JSON, что и обычные записи:
+// на этом этапе логгера ещё нет, а plain text до сборщика логов не доезжает.
+func FatalStartup(message string, err error) {
+	cfg := zap.NewProductionConfig()
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+	cfg.OutputPaths = []string{"stderr"}
+
+	log, buildErr := cfg.Build()
+	if buildErr != nil {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", message, err)
+
+		return
+	}
+
+	defer func() { _ = log.Sync() }()
+
+	log.Error(message, zap.Error(err))
 }
 
 func isDevelopment(env string) bool {
