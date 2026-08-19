@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-worker
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  {{- if not .Values.worker.autoscaling.enabled }}
+  replicas: {{ .Values.worker.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "avatars-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      annotations:
+        {{- include "avatars-service.checksums" . | nindent 8 }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "avatars-service.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "avatars-service.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.vault.enabled }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "avatars-service.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      {{- if .Values.vault.enabled }}
+      initContainers:
+        {{- include "avatars-service.vaultInitContainer" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "avatars-service.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.config.metrics.port }}
+              protocol: TCP
+          envFrom:
+            {{- include "avatars-service.envFrom" . | nindent 12 }}
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: avatars-worker
+            {{- if .Values.vault.enabled }}
+            - name: CONFIG_FILE
+              value: /vault/secrets/config.json
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.config.metrics.path }}
+              port: metrics
+            periodSeconds: 3
+            failureThreshold: 20
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.config.metrics.path }}
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.config.metrics.path }}
+              port: metrics
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- include "avatars-service.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            {{- include "avatars-service.volumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "avatars-service.volumes" . | nindent 8 }}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

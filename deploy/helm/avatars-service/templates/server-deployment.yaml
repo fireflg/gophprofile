@@ -1,0 +1,119 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-server
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  {{- if not .Values.server.autoscaling.enabled }}
+  replicas: {{ .Values.server.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "avatars-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      annotations:
+        {{- include "avatars-service.checksums" . | nindent 8 }}
+        {{- with .Values.server.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "avatars-service.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+    spec:
+      serviceAccountName: {{ include "avatars-service.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.vault.enabled }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- include "avatars-service.podSecurityContext" . | nindent 8 }}
+      terminationGracePeriodSeconds: 30
+      {{- if or .Values.vault.enabled .Values.migrations.enabled }}
+      initContainers:
+        {{- if .Values.vault.enabled }}
+        {{- include "avatars-service.vaultInitContainer" . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.migrations.enabled }}
+        {{- include "avatars-service.migrationsInitContainer" . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: server
+          image: {{ include "avatars-service.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.http.port }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.config.metrics.port }}
+              protocol: TCP
+          envFrom:
+            {{- include "avatars-service.envFrom" . | nindent 12 }}
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: avatars-server
+            {{- if .Values.vault.enabled }}
+            - name: CONFIG_FILE
+              value: /vault/secrets/config.json
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 3
+            failureThreshold: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.config.metrics.path }}
+              port: metrics
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          securityContext:
+            {{- include "avatars-service.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            {{- include "avatars-service.volumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "avatars-service.volumes" . | nindent 8 }}
+        {{- if .Values.migrations.enabled }}
+        - name: migrations
+          configMap:
+            name: {{ include "avatars-service.fullname" . }}-migrations
+        {{- end }}
+      {{- with .Values.server.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.server.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

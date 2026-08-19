@@ -1,0 +1,6 @@
+apiVersion: v2
+name: avatars-service
+description: Avatars service - HTTP API and thumbnail worker
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

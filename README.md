@@ -4,6 +4,10 @@
 файлы в S3, асинхронная нарезка миниатюр через воркер и брокер.
 
 
+Инфраструктура (PostgreSQL, S3, Kafka, мониторинг, Vault) в кластере чартом не
+разворачивается: её адреса задаются в values.
+
+
 ## Конфигурация
 
 Источники по возрастанию приоритета: значения по умолчанию → JSON-файл → переменные окружения.
@@ -57,6 +61,104 @@ docker/monitoring/       коллектор, jaeger, opensearch, prometheus, gra
 make up-infra        # только хранилища и брокер: хватает для make run-server
 make up-monitoring   # только наблюдаемость
 ```
+
+## Деплой в Kubernetes
+
+Чарт лежит в `deploy/helm/avatars-service`, окружения различаются только values:
+`values.yaml` (база, локальный kind), `values-staging.yaml`, `values-production.yaml`.
+Один образ на оба процесса, бинарь выбирается аргументом сборки:
+
+```bash
+docker build -f docker/application/Dockerfile --build-arg APP=server -t registry.example.com/avatars-service:release .
+docker push registry.example.com/avatars-service:release
+```
+
+Воркеру отдельный образ не нужен: `cmd/worker` собирается тем же Dockerfile
+(`--build-arg APP=worker`), если вы держите бинарники в разных образах — задайте
+свой `image.repository` в values воркера.
+
+```bash
+make helm-sync                        # копирует migrations/*.sql внутрь чарта
+make helm-lint
+helm upgrade --install avatars-service deploy/helm/avatars-service \
+  -n avatars --create-namespace \
+  -f deploy/helm/avatars-service/values-staging.yaml \
+  --set image.repository=registry.example.com/avatars-service
+```
+
+`make helm-sync` обязателен после правки миграций: Helm читает файлы только внутри
+каталога чарта, поэтому в `files/migrations/` лежит копия `migrations/`.
+
+Проверка после установки:
+
+```bash
+kubectl -n avatars get po,svc,hpa,netpol,servicemonitor
+kubectl -n avatars logs deploy/avatars-service-server -c migrations
+kubectl -n avatars port-forward svc/avatars-service 8080:8080   # UI и API
+kubectl -n avatars port-forward svc/avatars-service 9090:9090   # /metrics
+```
+
+### Что внутри чарта
+
+| Ресурс | Замечания |
+|---|---|
+| `Deployment` server | порты 8080 и 9090, init-контейнеры vault-agent и migrate |
+| `Deployment` worker | только 9090; миграций нет — иначе два раннера гоняются за `schema_migrations` |
+| `Service` × 2 | обычный для сервера, headless для воркера: `ServiceMonitor` селектит именно сервисы |
+| `ServiceMonitor` | порт `metrics`, включается `serviceMonitor.enabled` (нужны CRD prometheus-operator) |
+| `HPA` × 2 | `autoscaling/v2`, CPU и память по utilization; требует заданных `resources.requests` |
+| `ConfigMap`, `Secret` | имена ключей совпадают с `envBindings` из `internal/config/config.go` |
+| `ServiceAccount`, `Role`, `RoleBinding` | права только на `get`/`watch` своих ConfigMap и Secret |
+| `NetworkPolicy` × 2 | default-deny плюс точечные разрешения: DNS, ingress-контроллер, мониторинг, внешняя инфраструктура; выключаются целиком (`networkPolicy.enabled`) или по частям |
+| `PodDisruptionBudget` | включается в проде |
+| `Ingress` | опциональный, по умолчанию выключен |
+
+### Секреты и миграции
+
+Оба этапа сделаны init-контейнерами, а не Helm-хуками: хук выполняется отдельным
+подом вне жизненного цикла пода приложения, а init-контейнер гарантированно
+отрабатывает перед каждым стартом контейнера и в том же сетевом и security-контексте.
+
+При `vault.enabled=true` первым идёт `vault-agent`: аутентифицируется в Vault
+по токену ServiceAccount и рендерит `/vault/secrets/config.json` (`postgres.dsn`,
+`s3.access_key`, `s3.secret_key`) в `emptyDir` с `medium: Memory`. Приложению
+ставится `CONFIG_FILE=/vault/secrets/config.json` — viper уже умеет читать JSON
+по этому пути, менять код не пришлось. Вторым идёт `migrate` из образа
+`migrate/migrate`, SQL монтируется из ConfigMap.
+
+При `vault.enabled=false` (умолчание для kind/minikube) те же значения приходят
+из `Secret` через `envFrom`; env в viper приоритетнее файла, так что путь один и тот же.
+
+### Безопасность подов
+
+`runAsNonRoot: true`, `runAsUser: 10001` (совпадает с пользователем `app` из
+`docker/application/Dockerfile`), `readOnlyRootFilesystem: true` c `emptyDir` на
+`/tmp`, `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`,
+`seccompProfile: RuntimeDefault`. Токен ServiceAccount монтируется только когда
+включён Vault.
+
+PodSecurityPolicy удалён в Kubernetes 1.25, поэтому ограничения уровня пода
+задаются Pod Security Admission — лейблами на неймспейсе:
+
+```bash
+kubectl label ns avatars \
+  pod-security.kubernetes.io/enforce=restricted \
+  pod-security.kubernetes.io/warn=restricted \
+  pod-security.kubernetes.io/audit=restricted
+```
+
+Если неймспейс создаёт сам чарт, те же лейблы навешивает `podSecurity.labelNamespace=true`.
+
+### Пробы
+
+| Процесс | readiness | liveness |
+|---|---|---|
+| server | `GET /health:8080` — проверяет postgres, S3 и брокер, под уходит из эндпоинтов, пока они недоступны | `GET /metrics:9090` — без внешних зависимостей, рестарт только если процесс завис |
+| worker | `GET /metrics:9090` | `GET /metrics:9090` |
+
+Разделение намеренное: если повесить liveness на `/health`, кратковременная
+недоступность БД перезапустит все поды разом вместо того, чтобы просто снять
+их с балансировки.
 
 ## Наблюдаемость
 

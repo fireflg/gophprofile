@@ -1,0 +1,122 @@
+image:
+  tag: release
+  pullPolicy: IfNotPresent
+
+server:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+    targetMemoryUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: avatars-service
+          app.kubernetes.io/component: server
+
+worker:
+  replicaCount: 3
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1536Mi
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 65
+    targetMemoryUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: avatars-service
+          app.kubernetes.io/component: worker
+
+ingress:
+  enabled: true
+  className: nginx
+  host: avatars.example.com
+  tls:
+    - secretName: avatars-tls
+      hosts:
+        - avatars.example.com
+
+config:
+  appEnv: production
+  logLevel: info
+  postgres:
+    maxConns: 20
+    minConns: 5
+  s3:
+    endpoint: s3.example.com
+    useSSL: true
+    publicBaseURL: https://cdn.example.com/avatars
+  kafka:
+    brokers: kafka-0.example.com:9092,kafka-1.example.com:9092,kafka-2.example.com:9092
+  otel:
+    endpoint: otel-collector.monitoring:4317
+    insecure: false
+    sampleRatio: 0.1
+
+secrets:
+  create: false
+
+vault:
+  enabled: true
+  address: https://vault.example.com
+  role: avatars-service-production
+  secretPath: secret/data/production/avatars-service
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  labels:
+    release: prometheus
+
+networkPolicy:
+  enabled: true
+  egress:
+    rules:
+      - to:
+          - ipBlock:
+              cidr: 10.20.0.0/16
+        ports:
+          - port: 5432
+            protocol: TCP
+          - port: 443
+            protocol: TCP
+          - port: 9092
+            protocol: TCP
+          - port: 8200
+            protocol: TCP
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+        ports:
+          - port: 4317
+            protocol: TCP
