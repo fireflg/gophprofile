@@ -3,12 +3,14 @@
 .idea
 .vscode
 
+.golangci.yml
+.DS_Store
+.env
+config.json
+
 bin/
 coverage.out
 coverage.filtered.out
-
-.env
-config.json
 
 docker/
 k8s/
@@ -17,7 +19,4 @@ tests/
 migrations/
 
 README.md
-CLAUDE.md
 Makefile
-.golangci.yml
-.DS_Store
