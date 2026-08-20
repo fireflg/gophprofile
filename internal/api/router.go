@@ -4,12 +4,12 @@ package api
 import (
 	"compress/gzip"
 	"io/fs"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/handlers"
@@ -22,7 +22,7 @@ const healthPath = "/health"
 // Deps - зависимости роутера.
 type Deps struct {
 	Config  *config.Config
-	Logger  *zap.Logger
+	Logger  *slog.Logger
 	Avatars *handlers.AvatarHandler
 	Health  *handlers.HealthHandler
 	// Static - статика веб-интерфейса; nil отключает раздачу.

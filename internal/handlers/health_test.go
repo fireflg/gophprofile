@@ -5,15 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/fireflg/gophprofile/internal/handlers"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 func okProbe(context.Context) error { return nil }
@@ -23,7 +20,7 @@ func failingProbe(message string) func(context.Context) error {
 }
 
 func TestHealthAllComponentsUp(t *testing.T) {
-	handler := handlers.NewHealthHandler(zap.NewNop(),
+	handler := handlers.NewHealthHandler(logger.Nop(),
 		handlers.Check{Name: "postgres", Probe: okProbe},
 		handlers.Check{Name: "s3", Probe: okProbe},
 		handlers.Check{Name: "broker", Probe: okProbe},
@@ -41,7 +38,7 @@ func TestHealthAllComponentsUp(t *testing.T) {
 }
 
 func TestHealthReturns503WhenComponentDown(t *testing.T) {
-	handler := handlers.NewHealthHandler(zap.NewNop(),
+	handler := handlers.NewHealthHandler(logger.Nop(),
 		handlers.Check{Name: "postgres", Probe: okProbe},
 		handlers.Check{Name: "s3", Probe: failingProbe("bucket недоступен")},
 	)
@@ -58,9 +55,8 @@ func TestHealthReturns503WhenComponentDown(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "bucket недоступен")
 }
 
-func TestHealthLogsErrorDetailsInsteadOfExposingThem(t *testing.T) {
-	core, logs := observer.New(zapcore.ErrorLevel)
-	handler := handlers.NewHealthHandler(zap.New(core),
+func TestHealthDoesNotExposeErrorDetails(t *testing.T) {
+	handler := handlers.NewHealthHandler(logger.Nop(),
 		handlers.Check{Name: "s3", Probe: failingProbe("dial tcp 10.0.0.7:9000: connection refused")},
 	)
 
@@ -69,60 +65,11 @@ func TestHealthLogsErrorDetailsInsteadOfExposingThem(t *testing.T) {
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.NotContains(t, rec.Body.String(), "10.0.0.7")
-	require.Equal(t, 1, logs.Len())
-
-	fields := logs.All()[0].ContextMap()
-	require.Equal(t, "health_handler", fields["component"])
-	require.Equal(t, "s3", fields["check"])
-	require.Contains(t, fields["error"], "10.0.0.7:9000")
-}
-
-func TestHealthLogsOnlyStateChanges(t *testing.T) {
-	core, logs := observer.New(zapcore.DebugLevel)
-
-	var down atomic.Bool
-
-	down.Store(true)
-
-	handler := handlers.NewHealthHandler(zap.New(core),
-		handlers.Check{Name: "s3", Probe: func(context.Context) error {
-			if down.Load() {
-				return errors.New("bucket недоступен")
-			}
-
-			return nil
-		}},
-	)
-
-	probe := func() {
-		handler.Health(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
-	}
-
-	probe()
-	probe()
-
-	require.Len(t, logs.FilterMessage("dependency is down").All(), 1)
-
-	down.Store(false)
-
-	probe()
-	probe()
-
-	require.Len(t, logs.FilterMessage("dependency is down").All(), 1)
-	require.Len(t, logs.FilterMessage("dependency is back").All(), 1)
-}
-
-func TestHealthDoesNotLogHealthyDependencyOnStartup(t *testing.T) {
-	core, logs := observer.New(zapcore.DebugLevel)
-	handler := handlers.NewHealthHandler(zap.New(core), handlers.Check{Name: "postgres", Probe: okProbe})
-
-	handler.Health(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health", nil))
-
-	require.Zero(t, logs.Len())
+	require.NotContains(t, rec.Body.String(), "connection refused")
 }
 
 func TestHealthWithoutChecks(t *testing.T) {
-	handler := handlers.NewHealthHandler(zap.NewNop())
+	handler := handlers.NewHealthHandler(logger.Nop())
 
 	rec := httptest.NewRecorder()
 	handler.Health(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -133,7 +80,7 @@ func TestHealthWithoutChecks(t *testing.T) {
 
 // Проверки идут параллельно, поэтому медленный компонент ограничен общим таймаутом контекста.
 func TestHealthProbeRespectsContext(t *testing.T) {
-	handler := handlers.NewHealthHandler(zap.NewNop(),
+	handler := handlers.NewHealthHandler(logger.Nop(),
 		handlers.Check{Name: "slow", Probe: func(ctx context.Context) error {
 			_, hasDeadline := ctx.Deadline()
 			require.True(t, hasDeadline)

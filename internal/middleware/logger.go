@@ -1,19 +1,18 @@
 package middleware
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	"github.com/fireflg/gophprofile/pkg/ctxmeta"
 	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
-// Logger пишет в zap строку доступа по каждому запросу.
-func Logger(log *zap.Logger) func(http.Handler) http.Handler {
+// Logger пишет в slog строку доступа по каждому запросу.
+func Logger(log *slog.Logger) func(http.Handler) http.Handler {
 	if log != nil {
 		log = logger.Component(log, "http")
 	}
@@ -31,42 +30,44 @@ func Logger(log *zap.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rw, r)
 
-			entry := log.Check(levelFor(rw.Status()), "request")
-			if entry == nil {
+			ctx := r.Context()
+
+			level := levelFor(rw.Status())
+			if !log.Enabled(ctx, level) {
 				return
 			}
 
-			fields := append(logger.ContextFields(r.Context()),
-				zap.String("method", r.Method),
-				zap.String("path", r.URL.Path),
-				zap.Int("status", rw.Status()),
-				zap.Int("bytes", rw.bytes),
-				zap.Duration("duration", time.Since(start)),
-				zap.String("remote_addr", r.RemoteAddr),
-			)
-
-			if id := RequestIDFrom(r.Context()); id != "" {
-				fields = append(fields, zap.String("request_id", id))
+			attrs := []slog.Attr{
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+				slog.Int("status", rw.Status()),
+				slog.Int("bytes", rw.bytes),
+				slog.Duration("duration", time.Since(start)),
+				slog.String("remote_addr", r.RemoteAddr),
 			}
 
-			if ctxmeta.UserIDFrom(r.Context()) == "" {
+			if id := RequestIDFrom(ctx); id != "" {
+				attrs = append(attrs, slog.String("request_id", id))
+			}
+
+			if ctxmeta.UserIDFrom(ctx) == "" {
 				if id := chi.URLParam(r, "user_id"); id != "" {
-					fields = append(fields, zap.String("user_id", id))
+					attrs = append(attrs, slog.String("user_id", id))
 				}
 			}
 
-			entry.Write(fields...)
+			log.LogAttrs(ctx, level, "request", attrs...)
 		})
 	}
 }
 
-func levelFor(status int) zapcore.Level {
+func levelFor(status int) slog.Level {
 	switch {
 	case status >= http.StatusInternalServerError:
-		return zapcore.ErrorLevel
+		return slog.LevelError
 	case status >= http.StatusBadRequest:
-		return zapcore.WarnLevel
+		return slog.LevelWarn
 	default:
-		return zapcore.InfoLevel
+		return slog.LevelInfo
 	}
 }

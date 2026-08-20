@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -11,7 +12,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 )
@@ -63,15 +63,15 @@ func NewMetricsServer(ctx context.Context, cfg config.Metrics, registry *prometh
 }
 
 // Serve обслуживает скрейп до вызова Shutdown; вызывается в отдельной горутине.
-func (s *MetricsServer) Serve(log *zap.Logger) {
+func (s *MetricsServer) Serve(log *slog.Logger) {
 	if s == nil {
 		return
 	}
 
-	log.Info("metrics server started", zap.String("addr", s.addr), zap.String("path", s.path))
+	log.Info("metrics server started", slog.String("addr", s.addr), slog.String("path", s.path))
 
 	if err := s.server.Serve(s.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Error("metrics server stopped", zap.Error(err))
+		log.Error("metrics server stopped", slog.Any("error", err))
 	}
 }
 

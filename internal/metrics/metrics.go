@@ -23,6 +23,12 @@ const (
 // scopeName - instrumentation scope; попадает в otel_scope_name при экспорте.
 const scopeName = "github.com/fireflg/gophprofile/internal/metrics"
 
+// storageRefreshInterval - как часто пересчитывается суммарный объём хранилища.
+const storageRefreshInterval = time.Minute
+
+// storageQueryTimeout - предел на один поход в БД за объёмом хранилища.
+const storageQueryTimeout = 5 * time.Second
+
 var meter = otel.Meter(scopeName)
 
 var (
@@ -132,11 +138,16 @@ func ObserveRequest(ctx context.Context, method, route string, code int, started
 
 // RegisterStorageGauge подписывает асинхронный gauge на суммарный объём хранилища.
 func RegisterStorageGauge(observe func(context.Context) (int64, error)) error {
+	cached := Cached(observe, storageRefreshInterval)
+
 	_, err := meter.Int64ObservableGauge("avatars_storage",
 		metric.WithDescription("Total storage used by avatars"),
 		metric.WithUnit("By"),
 		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
-			value, err := observe(ctx)
+			ctx, cancel := context.WithTimeout(ctx, storageQueryTimeout)
+			defer cancel()
+
+			value, err := cached(ctx)
 			if err != nil {
 				return err
 			}

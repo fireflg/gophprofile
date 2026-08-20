@@ -1,16 +1,17 @@
-// Package logger настраивает структурированный логгер приложения на zap.
+// Package logger настраивает структурированный логгер приложения на log/slog.
 package logger
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"log/slog"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 
-	"go.opentelemetry.io/contrib/bridges/otelzap"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel/log"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	"github.com/fireflg/gophprofile/pkg/ctxmeta"
 	"github.com/fireflg/gophprofile/pkg/otelx"
@@ -19,155 +20,172 @@ import (
 // scope - имя instrumentation scope для записей, уходящих в OTLP.
 const scope = "github.com/fireflg/gophprofile/pkg/logger"
 
-// contextField - имя поля, в котором контекст едет до моста.
-const contextField = "context"
+// New создаёт логгер: JSON для production-окружений, текстовый вывод для локальной разработки.
+func New(env, level string, provider log.LoggerProvider) *slog.Logger {
+	opts := &slog.HandlerOptions{
+		Level:       parseLevel(level),
+		AddSource:   true,
+		ReplaceAttr: replaceAttr,
+	}
 
-// New создаёт логгер: JSON для production-окружений, консольный вывод для локальной разработки.
-func New(env, level string, provider log.LoggerProvider) (*zap.Logger, error) {
-	var cfg zap.Config
+	var handler slog.Handler = slog.NewJSONHandler(os.Stdout, opts)
 	if isDevelopment(env) {
-		cfg = zap.NewDevelopmentConfig()
-	} else {
-		cfg = zap.NewProductionConfig()
+		handler = slog.NewTextHandler(os.Stdout, opts)
 	}
 
-	cfg.Level = zap.NewAtomicLevelAt(parseLevel(level))
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-
-	base, err := cfg.Build()
-	if err != nil {
-		return nil, fmt.Errorf("build logger: %w", err)
+	if provider != nil {
+		bridge := otelslog.NewHandler(scope, otelslog.WithLoggerProvider(provider))
+		handler = multiHandler{handler, bridge}
 	}
 
-	if provider == nil {
-		return base, nil
-	}
-
-	bridge := otelzap.NewCore(scope, otelzap.WithLoggerProvider(provider))
-
-	return base.WithOptions(zap.WrapCore(func(stdout zapcore.Core) zapcore.Core {
-		return zapcore.NewTee(ctxFilterCore{Core: stdout}, bridge)
-	})), nil
+	return slog.New(ContextHandler(handler))
 }
 
-// WithContext готовит логгер к записи в рамках текущего спана.
-func WithContext(ctx context.Context, l *zap.Logger) *zap.Logger {
-	if l == nil {
-		return nil
-	}
-
-	return l.With(ContextFields(ctx)...)
-}
-
-// ContextFields возвращает поля корреляции: контекст, идентификаторы трассы и пользователя.
-func ContextFields(ctx context.Context) []zap.Field {
-	fields := []zap.Field{zap.Any(contextField, ctx)}
-
-	if traceID := otelx.TraceIDFrom(ctx); traceID != "" {
-		fields = append(fields,
-			zap.String("trace_id", traceID),
-			zap.String("span_id", otelx.SpanIDFrom(ctx)))
-	}
-
-	if userID := ctxmeta.UserIDFrom(ctx); userID != "" {
-		fields = append(fields, zap.String("user_id", userID))
-	}
-
-	return fields
-}
-
-// ctxFilterCore выбрасывает поле с контекстом перед записью в stdout.
-type ctxFilterCore struct {
-	zapcore.Core
-}
-
-// With отбрасывает контекст из полей, накопленных логгером.
-func (c ctxFilterCore) With(fields []zapcore.Field) zapcore.Core {
-	return ctxFilterCore{Core: c.Core.With(dropContext(fields))}
-}
-
-// Check добавляет в запись само ядро-фильтр, а не вложенное: иначе Write
-// пойдёт мимо фильтра и контекст всё-таки окажется в выводе.
-func (c ctxFilterCore) Check(entry zapcore.Entry, checked *zapcore.CheckedEntry) *zapcore.CheckedEntry {
-	if c.Enabled(entry.Level) {
-		return checked.AddCore(entry, c)
-	}
-
-	return checked
-}
-
-// Write пишет запись без поля с контекстом.
-func (c ctxFilterCore) Write(entry zapcore.Entry, fields []zapcore.Field) error {
-	return c.Core.Write(entry, dropContext(fields))
-}
-
-// dropContext возвращает поля без значений типа context.Context.
-// Исходный срез не меняется: его же получает второе ядро в tee.
-func dropContext(fields []zapcore.Field) []zapcore.Field {
-	first := -1
-
-	for i, field := range fields {
-		if _, ok := field.Interface.(context.Context); ok {
-			first = i
-
-			break
-		}
-	}
-
-	if first < 0 {
-		return fields
-	}
-
-	kept := make([]zapcore.Field, 0, len(fields)-1)
-	kept = append(kept, fields[:first]...)
-
-	for _, field := range fields[first+1:] {
-		if _, ok := field.Interface.(context.Context); ok {
-			continue
-		}
-
-		kept = append(kept, field)
-	}
-
-	return kept
+// ContextHandler добавляет к каждой записи идентификаторы трейса и пользователя из контекста.
+func ContextHandler(next slog.Handler) slog.Handler {
+	return contextHandler{Handler: next}
 }
 
 // Component возвращает дочерний логгер компонента.
-func Component(log *zap.Logger, name string) *zap.Logger {
+func Component(log *slog.Logger, name string) *slog.Logger {
 	if log == nil {
-		return zap.NewNop()
+		return Nop()
 	}
 
-	return log.With(zap.String("component", name))
+	return log.With(slog.String("component", name))
+}
+
+// Nop возвращает логгер, который ничего не пишет.
+func Nop() *slog.Logger {
+	return slog.New(slog.DiscardHandler)
 }
 
 // FatalStartup сообщает об отказе старта тем же JSON, что и обычные записи:
 // на этом этапе логгера ещё нет, а plain text до сборщика логов не доезжает.
 func FatalStartup(message string, err error) {
-	cfg := zap.NewProductionConfig()
-	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	cfg.OutputPaths = []string{"stderr"}
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{ReplaceAttr: replaceAttr}))
 
-	log, buildErr := cfg.Build()
-	if buildErr != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", message, err)
+	log.Error(message, slog.Any("error", err))
+}
 
-		return
+type contextHandler struct {
+	slog.Handler
+}
+
+// Handle дописывает корреляцию и передаёт запись дальше.
+func (h contextHandler) Handle(ctx context.Context, record slog.Record) error {
+	record = record.Clone()
+
+	if traceID := otelx.TraceIDFrom(ctx); traceID != "" {
+		record.AddAttrs(
+			slog.String("trace_id", traceID),
+			slog.String("span_id", otelx.SpanIDFrom(ctx)))
 	}
 
-	defer func() { _ = log.Sync() }()
+	if userID := ctxmeta.UserIDFrom(ctx); userID != "" {
+		record.AddAttrs(slog.String("user_id", userID))
+	}
 
-	log.Error(message, zap.Error(err))
+	return h.Handler.Handle(ctx, record)
+}
+
+// WithAttrs сохраняет обёртку у дочернего логгера.
+func (h contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return contextHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+// WithGroup сохраняет обёртку у дочернего логгера.
+func (h contextHandler) WithGroup(name string) slog.Handler {
+	return contextHandler{Handler: h.Handler.WithGroup(name)}
+}
+
+// multiHandler раздаёт запись нескольким хендлерам: stdout и мосту OTLP.
+type multiHandler []slog.Handler
+
+// Enabled разрешает запись, если её ждёт хотя бы один хендлер.
+func (h multiHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, handler := range h {
+		if handler.Enabled(ctx, level) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Handle отдаёт запись всем хендлерам и собирает их ошибки.
+func (h multiHandler) Handle(ctx context.Context, record slog.Record) error {
+	var errs []error
+
+	for _, handler := range h {
+		if !handler.Enabled(ctx, record.Level) {
+			continue
+		}
+
+		if err := handler.Handle(ctx, record.Clone()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// WithAttrs добавляет поля каждому хендлеру.
+func (h multiHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make(multiHandler, len(h))
+	for i, handler := range h {
+		next[i] = handler.WithAttrs(attrs)
+	}
+
+	return next
+}
+
+// WithGroup открывает группу у каждого хендлера.
+func (h multiHandler) WithGroup(name string) slog.Handler {
+	next := make(multiHandler, len(h))
+	for i, handler := range h {
+		next[i] = handler.WithGroup(name)
+	}
+
+	return next
+}
+
+// replaceAttr приводит служебные поля к виду, привычному сборщику логов.
+func replaceAttr(groups []string, attr slog.Attr) slog.Attr {
+	if len(groups) > 0 {
+		return attr
+	}
+
+	switch attr.Key {
+	case slog.TimeKey:
+		attr.Key = "ts"
+	case slog.SourceKey:
+		source, ok := attr.Value.Any().(*slog.Source)
+		if !ok {
+			return attr
+		}
+
+		return slog.String("caller", caller(source))
+	}
+
+	return attr
+}
+
+func caller(source *slog.Source) string {
+	dir, file := filepath.Split(source.File)
+
+	return filepath.Join(filepath.Base(dir), file) + ":" + strconv.Itoa(source.Line)
 }
 
 func isDevelopment(env string) bool {
 	return strings.EqualFold(env, "development") || strings.EqualFold(env, "local")
 }
 
-func parseLevel(level string) zapcore.Level {
-	parsed, err := zapcore.ParseLevel(strings.ToLower(strings.TrimSpace(level)))
-	if err != nil {
-		return zapcore.InfoLevel
+func parseLevel(level string) slog.Level {
+	var parsed slog.Level
+
+	if err := parsed.UnmarshalText([]byte(strings.TrimSpace(level))); err != nil {
+		return slog.LevelInfo
 	}
 
 	return parsed

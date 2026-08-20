@@ -2,11 +2,10 @@ package handlers
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
-
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/metrics"
 	"github.com/fireflg/gophprofile/pkg/logger"
@@ -41,7 +40,7 @@ const (
 
 // HealthHandler — обработчик проверки работоспособности.
 type HealthHandler struct {
-	log    *zap.Logger
+	log    *slog.Logger
 	checks []Check
 
 	mu    sync.Mutex
@@ -49,7 +48,7 @@ type HealthHandler struct {
 }
 
 // NewHealthHandler создаёт обработчик с набором проверок.
-func NewHealthHandler(log *zap.Logger, checks ...Check) *HealthHandler {
+func NewHealthHandler(log *slog.Logger, checks ...Check) *HealthHandler {
 	return &HealthHandler{
 		log:    logger.Component(log, "health_handler"),
 		checks: checks,
@@ -109,7 +108,7 @@ func (h *HealthHandler) Health(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := WriteJSON(w, code, response); err != nil {
-		logger.WithContext(ctx, h.log).Error("write health response", zap.Error(err))
+		h.log.ErrorContext(ctx, "write health response", slog.Any("error", err))
 	}
 }
 
@@ -127,12 +126,10 @@ func (h *HealthHandler) report(ctx context.Context, name string, err error) {
 		return
 	}
 
-	log := logger.WithContext(ctx, h.log)
-
 	switch {
 	case !up:
-		log.Error("dependency is down", zap.String("check", name), zap.Error(err))
+		h.log.ErrorContext(ctx, "dependency is down", slog.String("check", name), slog.Any("error", err))
 	case known:
-		log.Info("dependency is back", zap.String("check", name))
+		h.log.InfoContext(ctx, "dependency is back", slog.String("check", name))
 	}
 }

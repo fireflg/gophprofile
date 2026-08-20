@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/domain"
 	"github.com/fireflg/gophprofile/pkg/logger"
@@ -47,11 +47,11 @@ type AvatarUseCase interface {
 // AvatarHandler - HTTP-обработчики /api/v1.
 type AvatarHandler struct {
 	service AvatarUseCase
-	log     *zap.Logger
+	log     *slog.Logger
 }
 
 // NewAvatarHandler создаёт обработчики аватарок.
-func NewAvatarHandler(service AvatarUseCase, log *zap.Logger) *AvatarHandler {
+func NewAvatarHandler(service AvatarUseCase, log *slog.Logger) *AvatarHandler {
 	return &AvatarHandler{service: service, log: logger.Component(log, "avatar_handler")}
 }
 
@@ -241,13 +241,13 @@ func (h *AvatarHandler) writeFile(w http.ResponseWriter, r *http.Request, result
 	}
 
 	if _, err := io.Copy(w, result.Body); err != nil {
-		logger.WithContext(r.Context(), h.log).Error("stream avatar file", zap.Error(err))
+		h.log.ErrorContext(r.Context(), "stream avatar file", slog.Any("error", err))
 	}
 }
 
 func (h *AvatarHandler) writeJSON(w http.ResponseWriter, r *http.Request, code int, payload any) {
 	if err := WriteJSON(w, code, payload); err != nil {
-		logger.WithContext(r.Context(), h.log).Error("write json response", zap.Error(err))
+		h.log.ErrorContext(r.Context(), "write json response", slog.Any("error", err))
 	}
 }
 

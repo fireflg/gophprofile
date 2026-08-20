@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"log/slog"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
@@ -28,7 +28,7 @@ type Processor struct {
 	repo    domain.AvatarRepository
 	storage domain.FileStorage
 	sizes   []config.Size
-	log     *zap.Logger
+	log     *slog.Logger
 }
 
 // NewProcessor создаёт обработчик событий.
@@ -36,7 +36,7 @@ func NewProcessor(
 	repo domain.AvatarRepository,
 	storage domain.FileStorage,
 	sizes []config.Size,
-	log *zap.Logger,
+	log *slog.Logger,
 ) (*Processor, error) {
 	if len(sizes) == 0 {
 		return nil, errors.New("worker: thumbnail sizes must not be empty")
@@ -62,8 +62,8 @@ func (p *Processor) Handle(ctx context.Context, event domain.Event) error {
 	case domain.EventAvatarDeleted:
 		err = p.handleDeleted(ctx, event)
 	default:
-		logger.WithContext(ctx, p.log).Warn("unknown event type",
-			zap.String("type", string(event.Type)), zap.String("avatar_id", event.AvatarID.String()))
+		p.log.WarnContext(ctx, "unknown event type",
+			slog.String("type", string(event.Type)), slog.String("avatar_id", event.AvatarID.String()))
 
 		err = errSkipped
 	}
@@ -107,13 +107,11 @@ func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) erro
 		attribute.Int("thumbnail.count", len(p.sizes)),
 	)
 
-	log := logger.WithContext(ctx, p.log)
-
 	avatar, err := p.repo.GetByID(ctx, event.AvatarID)
 	if err != nil {
 		if errors.Is(err, domain.ErrAvatarNotFound) {
-			log.Info("avatar is gone, event skipped",
-				zap.String("avatar_id", event.AvatarID.String()))
+			p.log.InfoContext(ctx, "avatar is gone, event skipped",
+				slog.String("avatar_id", event.AvatarID.String()))
 
 			return errSkipped
 		}
@@ -122,8 +120,8 @@ func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) erro
 	}
 
 	if avatar.ProcessingStatus == domain.ProcessingStatusReady {
-		log.Info("avatar already processed, duplicate skipped",
-			zap.String("avatar_id", event.AvatarID.String()))
+		p.log.InfoContext(ctx, "avatar already processed, duplicate skipped",
+			slog.String("avatar_id", event.AvatarID.String()))
 
 		return errSkipped
 	}
@@ -135,8 +133,8 @@ func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) erro
 	thumbnails, width, height, err := p.makeThumbnails(ctx, event)
 	if err != nil {
 		if statusErr := p.repo.SetProcessingStatus(ctx, event.AvatarID, domain.ProcessingStatusFailed); statusErr != nil {
-			log.Error("mark processing failed",
-				zap.String("avatar_id", event.AvatarID.String()), zap.Error(statusErr))
+			p.log.ErrorContext(ctx, "mark processing failed",
+				slog.String("avatar_id", event.AvatarID.String()), slog.Any("error", statusErr))
 		}
 
 		return recordError(span, err)
@@ -151,11 +149,11 @@ func (p *Processor) handleUploaded(ctx context.Context, event domain.Event) erro
 		attribute.Int("image.height", height),
 	)
 
-	log.Info("avatar processed",
-		zap.String("avatar_id", event.AvatarID.String()),
-		zap.Int("thumbnails", len(thumbnails)),
-		zap.Int("width", width),
-		zap.Int("height", height))
+	p.log.InfoContext(ctx, "avatar processed",
+		slog.String("avatar_id", event.AvatarID.String()),
+		slog.Int("thumbnails", len(thumbnails)),
+		slog.Int("width", width),
+		slog.Int("height", height))
 
 	return nil
 }
@@ -248,8 +246,8 @@ func (p *Processor) handleDeleted(ctx context.Context, event domain.Event) error
 		return recordError(span, fmt.Errorf("delete objects: %w", err))
 	}
 
-	logger.WithContext(ctx, p.log).Info("avatar objects removed",
-		zap.String("avatar_id", event.AvatarID.String()), zap.Int("objects", len(keys)))
+	p.log.InfoContext(ctx, "avatar objects removed",
+		slog.String("avatar_id", event.AvatarID.String()), slog.Int("objects", len(keys)))
 
 	return nil
 }

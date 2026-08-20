@@ -9,6 +9,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.uber.org/mock/gomock"
 
 	"github.com/fireflg/gophprofile/internal/config"
@@ -103,6 +106,34 @@ func TestPublishReturnsWriterError(t *testing.T) {
 	writer.EXPECT().WriteMessages(gomock.Any(), gomock.Any()).Return(writeErr)
 
 	require.ErrorIs(t, publisher.Publish(t.Context(), testEvent()), writeErr)
+}
+
+func TestPublishSpanFollowsMessagingConvention(t *testing.T) {
+	recorder := recordSpans(t)
+	publisher, writer, _ := newTestPublisher(t)
+
+	writer.EXPECT().WriteMessages(gomock.Any(), gomock.Any()).Return(nil)
+
+	require.NoError(t, publisher.Publish(t.Context(), testEvent()))
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	require.Equal(t, "publish "+testTopic, spans[0].Name())
+	require.Contains(t, spans[0].Attributes(), semconv.MessagingOperationName("publish"))
+	require.Contains(t, spans[0].Attributes(), semconv.MessagingOperationTypeSend)
+	require.Contains(t, spans[0].Attributes(), semconv.MessagingDestinationName(testTopic))
+}
+
+func recordSpans(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+
+	recorder := tracetest.NewSpanRecorder()
+	previous := tracer
+	tracer = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)).Tracer("test")
+
+	t.Cleanup(func() { tracer = previous })
+
+	return recorder
 }
 
 func TestPingAsksMetadataForTopic(t *testing.T) {

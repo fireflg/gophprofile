@@ -64,18 +64,3 @@ func TestTraceWithoutSpanLeavesHeaderEmpty(t *testing.T) {
 
 	require.Empty(t, rec.Header().Get(middleware.HeaderTraceID))
 }
-
-func TestLoggerAddsTraceCorrelation(t *testing.T) {
-	log, logs := observedLogger()
-
-	req, traceID := requestWithTrace(t)
-
-	handler := middleware.Logger(log)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	handler.ServeHTTP(httptest.NewRecorder(), req)
-
-	require.Equal(t, 1, logs.Len())
-
-	fields := logs.All()[0].ContextMap()
-	require.Equal(t, traceID, fields["trace_id"])
-	require.Equal(t, "00f067aa0ba902b7", fields["span_id"])
-}

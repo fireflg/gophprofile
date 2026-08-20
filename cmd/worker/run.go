@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os/signal"
 	"syscall"
-
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/repository"
@@ -30,24 +29,19 @@ func run() error {
 		return err
 	}
 
-	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
-	if err != nil {
-		return err
-	}
+	appLog := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
 
-	otelx.SetErrorHandler(zapLog)
+	otelx.SetErrorHandler(logger.Component(appLog, "otel"))
 
 	defer func() {
 		if shutdownErr := tel.Shutdown(ctx); shutdownErr != nil {
-			zapLog.Error("shutdown telemetry", zap.Error(shutdownErr))
+			appLog.Error("shutdown telemetry", slog.Any("error", shutdownErr))
 		}
-
-		_ = zapLog.Sync()
 	}()
 
-	go tel.Metrics.Serve(zapLog)
+	go tel.Metrics.Serve(logger.Component(appLog, "metrics"))
 
-	runLog := logger.Component(zapLog, "worker")
+	runLog := logger.Component(appLog, "worker")
 
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {
@@ -64,19 +58,19 @@ func run() error {
 		repository.NewAvatarRepository(pool),
 		storage,
 		cfg.Image.ThumbnailSizes,
-		zapLog,
+		appLog,
 	)
 	if err != nil {
 		return err
 	}
 
-	consumer, err := worker.NewConsumer(cfg.Kafka, processor, zapLog)
+	consumer, err := worker.NewConsumer(cfg.Kafka, processor, appLog)
 	if err != nil {
 		return err
 	}
 
 	runLog.Info("worker started",
-		zap.String("topic", cfg.Kafka.Topic), zap.String("group_id", cfg.Kafka.GroupID))
+		slog.String("topic", cfg.Kafka.Topic), slog.String("group_id", cfg.Kafka.GroupID))
 
 	if err := consumer.Run(ctx); err != nil {
 		return err

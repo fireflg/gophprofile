@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/metrics"
 	"github.com/fireflg/gophprofile/pkg/logger"
@@ -20,7 +20,7 @@ const panicResponse = `{"error":"Internal server error"}`
 
 // Recover перехватывает панику обработчика.
 // Сделал отдельную мидлвару, потому что chi recover шлет мимо обработчика логов в stdout.
-func Recover(log *zap.Logger) func(http.Handler) http.Handler {
+func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 	if log != nil {
 		log = logger.Component(log, "recover")
 	}
@@ -46,7 +46,7 @@ func Recover(log *zap.Logger) func(http.Handler) http.Handler {
 }
 
 // handlePanic записывает панику в лог, спан и метрику, после чего отвечает 500.
-func handlePanic(w http.ResponseWriter, r *http.Request, cause any, log *zap.Logger) {
+func handlePanic(w http.ResponseWriter, r *http.Request, cause any, log *slog.Logger) {
 	ctx := r.Context()
 	err := fmt.Errorf("panic: %v", cause)
 
@@ -57,11 +57,11 @@ func handlePanic(w http.ResponseWriter, r *http.Request, cause any, log *zap.Log
 	metrics.ObservePanic(ctx, routeOf(r))
 
 	if log != nil {
-		logger.WithContext(ctx, log).Error("panic recovered",
-			zap.Error(err),
-			zap.String("method", r.Method),
-			zap.String("path", r.URL.Path),
-			zap.ByteString("stack", debug.Stack()))
+		log.ErrorContext(ctx, "panic recovered",
+			slog.Any("error", err),
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.String("stack", string(debug.Stack())))
 	}
 
 	writePanicResponse(w)

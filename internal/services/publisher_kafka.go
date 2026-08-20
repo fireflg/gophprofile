@@ -20,6 +20,9 @@ import (
 
 //go:generate mockgen -source=publisher_kafka.go -destination=mocks/publisher_mock.gen.go -package=mocks
 
+// publishOperation - имя операции в спане.
+const publishOperation = "publish"
+
 // KafkaWriter — продюсер сообщений Kafka.
 type KafkaWriter interface {
 	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
@@ -75,11 +78,13 @@ func NewKafkaPublisher(cfg config.Kafka) (*KafkaPublisher, error) {
 
 // Publish отправляет событие в топик.
 func (p *KafkaPublisher) Publish(ctx context.Context, event domain.Event) error {
-	ctx, span := tracer.Start(ctx, p.topic+" publish", trace.WithSpanKind(trace.SpanKindProducer))
+	ctx, span := tracer.Start(ctx, publishOperation+" "+p.topic, trace.WithSpanKind(trace.SpanKindProducer))
 	defer span.End()
 
 	span.SetAttributes(
 		semconv.MessagingSystemKafka,
+		semconv.MessagingOperationName(publishOperation),
+		semconv.MessagingOperationTypeSend,
 		semconv.MessagingDestinationName(p.topic),
 		attribute.String("event.type", string(event.Type)),
 		attribute.String("avatar.id", event.AvatarID.String()),

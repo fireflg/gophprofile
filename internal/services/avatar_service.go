@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"path"
 	"slices"
 	"strings"
@@ -14,7 +15,6 @@ import (
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
@@ -35,7 +35,7 @@ type AvatarService struct {
 	storage   domain.FileStorage
 	publisher domain.EventPublisher
 	cfg       config.Image
-	log       *zap.Logger
+	log       *slog.Logger
 	sem       chan struct{}
 	wg        sync.WaitGroup
 }
@@ -46,7 +46,7 @@ func NewAvatarService(
 	storage domain.FileStorage,
 	publisher domain.EventPublisher,
 	cfg config.Image,
-	log *zap.Logger,
+	log *slog.Logger,
 ) (*AvatarService, error) {
 	if cfg.MaxFileSize <= 0 {
 		return nil, errors.New("image: max_file_size must be positive")
@@ -77,16 +77,10 @@ func (s *AvatarService) Upload(ctx context.Context, in domain.UploadInput) (*dom
 
 	avatar, err := s.upload(ctx, in)
 
-	status := uploadStatus(err)
-
-	metrics.ObserveUpload(ctx, started, status)
-
-	if status == metrics.StatusError {
-		return nil, recordError(span, err)
-	}
+	metrics.ObserveUpload(ctx, started, uploadStatus(err))
 
 	if err != nil {
-		return nil, err
+		return nil, recordError(span, err)
 	}
 
 	span.SetAttributes(attribute.String("avatar.id", avatar.ID.String()))
@@ -99,11 +93,7 @@ func uploadStatus(err error) string {
 	case err == nil:
 		return metrics.StatusSuccess
 
-	case errors.Is(err, domain.ErrUserIDRequired),
-		errors.Is(err, domain.ErrFileRequired),
-		errors.Is(err, domain.ErrEmptyFile),
-		errors.Is(err, domain.ErrFileTooLarge),
-		errors.Is(err, domain.ErrUnsupportedFormat):
+	case domain.IsClientError(err):
 		return metrics.StatusClientError
 
 	default:
@@ -158,8 +148,8 @@ func (s *AvatarService) upload(ctx context.Context, in domain.UploadInput) (*dom
 
 	if err := s.storage.Put(ctx, avatar.S3Key, body, in.Size, mimeType); err != nil {
 		if statusErr := s.repo.SetUploadStatus(ctx, avatar.ID, domain.UploadStatusFailed); statusErr != nil {
-			s.log.Error("mark upload failed",
-				zap.String("avatar_id", avatar.ID.String()), zap.Error(statusErr))
+			s.log.ErrorContext(ctx, "mark upload failed",
+				slog.String("avatar_id", avatar.ID.String()), slog.Any("error", statusErr))
 		}
 
 		return nil, err
@@ -184,12 +174,40 @@ func (s *AvatarService) upload(ctx context.Context, in domain.UploadInput) (*dom
 
 // GetMetadata возвращает метаданные аватарки.
 func (s *AvatarService) GetMetadata(ctx context.Context, id uuid.UUID) (*domain.Avatar, error) {
-	return s.repo.GetByID(ctx, id)
+	ctx, span := tracer.Start(ctx, "get_metadata")
+	defer span.End()
+
+	span.SetAttributes(attribute.String("avatar.id", id.String()))
+
+	avatar, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, recordError(span, err)
+	}
+
+	span.SetAttributes(attribute.String("user_id", avatar.UserID))
+
+	return avatar, nil
 }
 
 // ListByUser возвращает страницу аватарок пользователя.
 func (s *AvatarService) ListByUser(ctx context.Context, userID string, limit, offset int) ([]*domain.Avatar, error) {
-	return s.repo.ListByUser(ctx, userID, limit, offset)
+	ctx, span := tracer.Start(ctx, "list_by_user")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("user_id", userID),
+		attribute.Int("limit", limit),
+		attribute.Int("offset", offset),
+	)
+
+	avatars, err := s.repo.ListByUser(ctx, userID, limit, offset)
+	if err != nil {
+		return nil, recordError(span, err)
+	}
+
+	span.SetAttributes(attribute.Int("avatars.count", len(avatars)))
+
+	return avatars, nil
 }
 
 // GetFile отдаёт файл аватарки в запрошенном размере и формате.
@@ -275,19 +293,30 @@ func (s *AvatarService) Delete(ctx context.Context, id uuid.UUID, requesterID st
 
 // DeleteUserAvatar мягко удаляет последнюю аватарку пользователя.
 func (s *AvatarService) DeleteUserAvatar(ctx context.Context, userID, requesterID string) error {
+	ctx, span := tracer.Start(ctx, "delete_user_avatar")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("user_id", userID),
+		attribute.String("requester_id", requesterID),
+	)
+
 	if requesterID == "" {
-		return domain.ErrUserIDRequired
+		return recordError(span, domain.ErrUserIDRequired)
 	}
+
 	if userID != requesterID {
-		return domain.ErrForbidden
+		return recordError(span, domain.ErrForbidden)
 	}
 
 	avatar, err := s.repo.GetLatestByUser(ctx, userID)
 	if err != nil {
-		return err
+		return recordError(span, err)
 	}
 
-	return s.Delete(ctx, avatar.ID, requesterID)
+	span.SetAttributes(attribute.String("avatar.id", avatar.ID.String()))
+
+	return recordError(span, s.Delete(ctx, avatar.ID, requesterID))
 }
 
 // URL возвращает публичную ссылку на объект хранилища.
@@ -387,9 +416,9 @@ func (s *AvatarService) publish(ctx context.Context, event domain.Event) {
 	select {
 	case s.sem <- struct{}{}:
 	default:
-		s.log.Warn("publish queue is full, sending inline",
-			zap.String("type", string(event.Type)),
-			zap.String("avatar_id", event.AvatarID.String()))
+		s.log.WarnContext(ctx, "publish queue is full, sending inline",
+			slog.String("type", string(event.Type)),
+			slog.String("avatar_id", event.AvatarID.String()))
 		s.send(ctx, event)
 
 		return
@@ -407,10 +436,10 @@ func (s *AvatarService) publish(ctx context.Context, event domain.Event) {
 
 func (s *AvatarService) send(ctx context.Context, event domain.Event) {
 	if err := s.publisher.Publish(ctx, event); err != nil {
-		logger.WithContext(ctx, s.log).Error("publish event",
-			zap.String("type", string(event.Type)),
-			zap.String("avatar_id", event.AvatarID.String()),
-			zap.Error(err))
+		s.log.ErrorContext(ctx, "publish event",
+			slog.String("type", string(event.Type)),
+			slog.String("avatar_id", event.AvatarID.String()),
+			slog.Any("error", err))
 	}
 }
 

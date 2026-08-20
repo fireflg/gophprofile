@@ -3,11 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os/signal"
 	"syscall"
-
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/api"
 	"github.com/fireflg/gophprofile/internal/config"
@@ -35,24 +34,19 @@ func run() error {
 		return err
 	}
 
-	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
-	if err != nil {
-		return err
-	}
+	appLog := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
 
-	otelx.SetErrorHandler(zapLog)
+	otelx.SetErrorHandler(logger.Component(appLog, "otel"))
 
 	defer func() {
 		if shutdownErr := tel.Shutdown(ctx); shutdownErr != nil {
-			zapLog.Error("shutdown telemetry", zap.Error(shutdownErr))
+			appLog.Error("shutdown telemetry", slog.Any("error", shutdownErr))
 		}
-
-		_ = zapLog.Sync()
 	}()
 
-	go tel.Metrics.Serve(zapLog)
+	go tel.Metrics.Serve(logger.Component(appLog, "metrics"))
 
-	runLog := logger.Component(zapLog, "server")
+	runLog := logger.Component(appLog, "server")
 
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {
@@ -73,7 +67,7 @@ func run() error {
 
 	repo := repository.NewAvatarRepository(pool)
 
-	avatarService, err := services.NewAvatarService(repo, storage, publisher, cfg.Image, zapLog)
+	avatarService, err := services.NewAvatarService(repo, storage, publisher, cfg.Image, appLog)
 	if err != nil {
 		return err
 	}
@@ -90,9 +84,9 @@ func run() error {
 
 	router := api.NewRouter(api.Deps{
 		Config:  cfg,
-		Logger:  zapLog,
-		Avatars: handlers.NewAvatarHandler(avatarService, zapLog),
-		Health: handlers.NewHealthHandler(zapLog,
+		Logger:  appLog,
+		Avatars: handlers.NewAvatarHandler(avatarService, appLog),
+		Health: handlers.NewHealthHandler(appLog,
 			handlers.Check{Name: "postgres", Probe: repo.Ping},
 			handlers.Check{Name: "s3", Probe: storage.Ping},
 			handlers.Check{Name: "broker", Probe: publisher.Ping},
@@ -109,7 +103,7 @@ func run() error {
 
 	go func() {
 		runLog.Info("http server started",
-			zap.String("addr", cfg.HTTP.Addr()), zap.String("env", cfg.App.Env))
+			slog.String("addr", cfg.HTTP.Addr()), slog.String("env", cfg.App.Env))
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

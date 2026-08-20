@@ -4,15 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/domain"
-	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 // ErrorResponse — единый формат ошибки API.
@@ -35,17 +34,17 @@ func WriteJSON(w http.ResponseWriter, code int, payload any) error {
 }
 
 // WriteError переводит доменную ошибку в HTTP-ответ.
-func WriteError(ctx context.Context, w http.ResponseWriter, log *zap.Logger, err error, limits Limits) {
+func WriteError(ctx context.Context, w http.ResponseWriter, log *slog.Logger, err error, limits Limits) {
 	code, payload := MapError(err, limits.MaxFileSize, limits.AllowedMimeTypes)
 
 	if code >= http.StatusInternalServerError {
 		recordSpanError(ctx, err)
 
-		logger.WithContext(ctx, log).Error("request failed", zap.Error(err))
+		log.ErrorContext(ctx, "request failed", slog.Any("error", err))
 	}
 
 	if writeErr := WriteJSON(w, code, payload); writeErr != nil {
-		logger.WithContext(ctx, log).Error("write error response", zap.Error(writeErr))
+		log.ErrorContext(ctx, "write error response", slog.Any("error", writeErr))
 	}
 }
 

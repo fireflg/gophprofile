@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -15,7 +16,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
@@ -26,6 +26,10 @@ import (
 )
 
 //go:generate mockgen -source=consumer.go -destination=mocks/consumer_mock.gen.go -package=mocks
+
+// processOperation - имя операции в спане; по конвенциям messaging спан
+// называется "{операция} {назначение}", например "process avatars.events".
+const processOperation = "process"
 
 // KafkaReader - часть kafka.Reader, которой пользуется потребитель.
 type KafkaReader interface {
@@ -43,11 +47,11 @@ type statsReader interface {
 type Consumer struct {
 	reader    KafkaReader
 	processor *Processor
-	log       *zap.Logger
+	log       *slog.Logger
 }
 
 // NewConsumer создаёт консьюмера.
-func NewConsumer(cfg config.Kafka, processor *Processor, log *zap.Logger) (*Consumer, error) {
+func NewConsumer(cfg config.Kafka, processor *Processor, log *slog.Logger) (*Consumer, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, errors.New("kafka: brokers are required")
 	}
@@ -79,7 +83,7 @@ func NewConsumer(cfg config.Kafka, processor *Processor, log *zap.Logger) (*Cons
 	return consumer, nil
 }
 
-func kafkaLogger(write func(string, ...zap.Field)) kafka.LoggerFunc {
+func kafkaLogger(write func(msg string, args ...any)) kafka.LoggerFunc {
 	return func(msg string, args ...any) {
 		write(strings.TrimSpace(fmt.Sprintf(msg, args...)))
 	}
@@ -98,7 +102,7 @@ func (c *Consumer) lag() int64 {
 func (c *Consumer) Run(ctx context.Context) error {
 	defer func() {
 		if err := c.reader.Close(); err != nil {
-			c.log.Error("close kafka reader", zap.Error(err))
+			c.log.Error("close kafka reader", slog.Any("error", err))
 		}
 	}()
 
@@ -130,11 +134,13 @@ func (c *Consumer) Run(ctx context.Context) error {
 func (c *Consumer) HandleMessage(ctx context.Context, msg kafka.Message) error {
 	ctx = otel.GetTextMapPropagator().Extract(ctx, &otelx.HeaderCarrier{Headers: &msg.Headers})
 
-	ctx, span := tracer.Start(ctx, "kafka.consume", trace.WithSpanKind(trace.SpanKindConsumer))
+	ctx, span := tracer.Start(ctx, processOperation+" "+msg.Topic, trace.WithSpanKind(trace.SpanKindConsumer))
 	defer span.End()
 
 	span.SetAttributes(
 		semconv.MessagingSystemKafka,
+		semconv.MessagingOperationName(processOperation),
+		semconv.MessagingOperationTypeProcess,
 		semconv.MessagingDestinationName(msg.Topic),
 		semconv.MessagingDestinationPartitionID(strconv.Itoa(msg.Partition)),
 		attribute.Int64("messaging.kafka.offset", msg.Offset),
@@ -177,9 +183,9 @@ func (c *Consumer) HandleMessage(ctx context.Context, msg kafka.Message) error {
 }
 
 func (c *Consumer) logMessageError(ctx context.Context, msg kafka.Message, message string, err error) {
-	logger.WithContext(ctx, c.log).Error(message,
-		zap.Error(err),
-		zap.String("topic", msg.Topic),
-		zap.Int("partition", msg.Partition),
-		zap.Int64("offset", msg.Offset))
+	c.log.ErrorContext(ctx, message,
+		slog.Any("error", err),
+		slog.String("topic", msg.Topic),
+		slog.Int("partition", msg.Partition),
+		slog.Int64("offset", msg.Offset))
 }

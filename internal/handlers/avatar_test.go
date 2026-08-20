@@ -15,11 +15,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/domain"
 	"github.com/fireflg/gophprofile/internal/handlers"
 	"github.com/fireflg/gophprofile/internal/handlers/mocks"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 const maxFileSize = 10 << 20
@@ -36,7 +36,7 @@ func newRouter(t *testing.T) (http.Handler, *mocks.MockAvatarUseCase) {
 		return "http://storage.test/" + key
 	}).AnyTimes()
 
-	handler := handlers.NewAvatarHandler(service, zap.NewNop())
+	handler := handlers.NewAvatarHandler(service, logger.Nop())
 
 	router := chi.NewRouter()
 	router.Post("/api/v1/avatars", handler.Upload)

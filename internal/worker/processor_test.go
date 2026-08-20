@@ -15,12 +15,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
 	"github.com/fireflg/gophprofile/internal/domain/mocks"
 	"github.com/fireflg/gophprofile/internal/worker"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 var thumbnailSizes = []config.Size{{Width: 100, Height: 100}, {Width: 300, Height: 300}}
@@ -32,7 +32,7 @@ func newProcessor(t *testing.T) (*worker.Processor, *mocks.MockAvatarRepository,
 	repo := mocks.NewMockAvatarRepository(ctrl)
 	storage := mocks.NewMockFileStorage(ctrl)
 
-	processor, err := worker.NewProcessor(repo, storage, thumbnailSizes, zap.NewNop())
+	processor, err := worker.NewProcessor(repo, storage, thumbnailSizes, logger.Nop())
 	require.NoError(t, err)
 
 	return processor, repo, storage
@@ -45,7 +45,7 @@ func TestNewProcessorRequiresThumbnailSizes(t *testing.T) {
 		mocks.NewMockAvatarRepository(ctrl),
 		mocks.NewMockFileStorage(ctrl),
 		nil,
-		zap.NewNop(),
+		logger.Nop(),
 	)
 	require.ErrorContains(t, err, "thumbnail sizes must not be empty")
 }

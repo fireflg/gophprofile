@@ -1,8 +1,6 @@
 package services
 
 import (
-	"errors"
-
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
@@ -14,9 +12,10 @@ import (
 var tracer = otelx.Tracer("internal/services")
 
 // recordError помечает спан ошибкой и возвращает её же, чтобы вызов
-// оставался однострочным: return recordError(span, err).
+// оставался однострочным: return recordError(span, err). Клиентские ошибки
+// статус спана не меняют: по конвенциям OpenTelemetry 4xx остаётся Unset.
 func recordError(span trace.Span, err error) error {
-	if err == nil || errors.Is(err, domain.ErrAvatarNotFound) {
+	if err == nil || domain.IsClientError(err) {
 		return err
 	}
 

@@ -2,6 +2,7 @@ package otelx
 
 import (
 	"context"
+	"log/slog"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/log"
@@ -10,7 +11,6 @@ import (
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 )
@@ -83,7 +83,7 @@ func Setup(ctx context.Context, cfg config.OTel, metricsCfg config.Metrics) (*Te
 	return tel, nil
 }
 
-// LoggerProvider возвращает провайдер логов для моста otelzap; nil - если телеметрия выключена.
+// LoggerProvider возвращает провайдер логов для моста otelslog; nil - если телеметрия выключена.
 func (t *Telemetry) LoggerProvider() log.LoggerProvider {
 	if t == nil || t.Logs == nil {
 		return nil
@@ -93,8 +93,8 @@ func (t *Telemetry) LoggerProvider() log.LoggerProvider {
 }
 
 // SetErrorHandler направляет внутренние ошибки.
-func SetErrorHandler(logger *zap.Logger) {
+func SetErrorHandler(logger *slog.Logger) {
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		logger.Warn("otel sdk error", zap.Error(err))
+		logger.Warn("otel sdk error", slog.Any("error", err))
 	}))
 }
