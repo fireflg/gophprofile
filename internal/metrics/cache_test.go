@@ -1,4 +1,4 @@
-package metrics_test
+package metrics
 
 import (
 	"context"
@@ -9,14 +9,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
-	"github.com/fireflg/gophprofile/internal/metrics"
 )
 
 func TestCachedQueriesSourceOnceWithinTTL(t *testing.T) {
 	var calls atomic.Int64
 
-	value := metrics.Cached(func(context.Context) (int64, error) {
+	value := cached(func(context.Context) (int64, error) {
 		return calls.Add(1) * 100, nil
 	}, time.Hour)
 
@@ -32,7 +30,7 @@ func TestCachedQueriesSourceOnceWithinTTL(t *testing.T) {
 func TestCachedRefreshesWhenValueExpired(t *testing.T) {
 	var calls atomic.Int64
 
-	value := metrics.Cached(func(context.Context) (int64, error) {
+	value := cached(func(context.Context) (int64, error) {
 		return calls.Add(1) * 100, nil
 	}, 0)
 
@@ -49,7 +47,7 @@ func TestCachedKeepsFailureUntilTTL(t *testing.T) {
 	var calls atomic.Int64
 
 	wantErr := errors.New("база недоступна")
-	value := metrics.Cached(func(context.Context) (int64, error) {
+	value := cached(func(context.Context) (int64, error) {
 		calls.Add(1)
 
 		return 0, wantErr
@@ -66,7 +64,7 @@ func TestCachedKeepsFailureUntilTTL(t *testing.T) {
 func TestCachedIsSafeForConcurrentUse(t *testing.T) {
 	var calls atomic.Int64
 
-	value := metrics.Cached(func(context.Context) (int64, error) {
+	value := cached(func(context.Context) (int64, error) {
 		return calls.Add(1) * 100, nil
 	}, time.Hour)
 

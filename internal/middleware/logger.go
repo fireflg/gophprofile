@@ -66,7 +66,7 @@ func levelFor(status int) slog.Level {
 	case status >= http.StatusInternalServerError:
 		return slog.LevelError
 	case status >= http.StatusBadRequest:
-		return slog.LevelWarn
+		return slog.LevelDebug
 	default:
 		return slog.LevelInfo
 	}

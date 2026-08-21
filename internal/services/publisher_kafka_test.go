@@ -124,6 +124,29 @@ func TestPublishSpanFollowsMessagingConvention(t *testing.T) {
 	require.Contains(t, spans[0].Attributes(), semconv.MessagingDestinationName(testTopic))
 }
 
+func TestPublishSpanIsLinkedToCallerInsteadOfNested(t *testing.T) {
+	recorder := recordSpans(t)
+	publisher, writer, _ := newTestPublisher(t)
+
+	writer.EXPECT().WriteMessages(gomock.Any(), gomock.Any()).Return(nil)
+
+	ctx, caller := tracer.Start(t.Context(), "caller")
+	require.NoError(t, publisher.Publish(ctx, testEvent()))
+	caller.End()
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 2)
+
+	published, callerSpan := spans[0], spans[1]
+
+	require.False(t, published.Parent().IsValid())
+	require.NotEqual(t, callerSpan.SpanContext().TraceID(), published.SpanContext().TraceID())
+
+	require.Len(t, published.Links(), 1)
+	require.Equal(t, callerSpan.SpanContext().SpanID(), published.Links()[0].SpanContext.SpanID())
+	require.Equal(t, callerSpan.SpanContext().TraceID(), published.Links()[0].SpanContext.TraceID())
+}
+
 func recordSpans(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
 

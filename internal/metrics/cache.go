@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// Cached нужен для кэширования значений метрик, чтобы не грузить бд
-func Cached(load func(context.Context) (int64, error), ttl time.Duration) func(context.Context) (int64, error) {
+// cached нужен для кэширования значений метрик, чтобы не грузить бд
+func cached(load func(context.Context) (int64, error), ttl time.Duration) func(context.Context) (int64, error) {
 	cache := &valueCache{load: load, ttl: ttl}
 
 	return cache.get

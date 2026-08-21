@@ -138,7 +138,7 @@ func ObserveRequest(ctx context.Context, method, route string, code int, started
 
 // RegisterStorageGauge подписывает асинхронный gauge на суммарный объём хранилища.
 func RegisterStorageGauge(observe func(context.Context) (int64, error)) error {
-	cached := Cached(observe, storageRefreshInterval)
+	size := cached(observe, storageRefreshInterval)
 
 	_, err := meter.Int64ObservableGauge("avatars_storage",
 		metric.WithDescription("Total storage used by avatars"),
@@ -147,7 +147,7 @@ func RegisterStorageGauge(observe func(context.Context) (int64, error)) error {
 			ctx, cancel := context.WithTimeout(ctx, storageQueryTimeout)
 			defer cancel()
 
-			value, err := cached(ctx)
+			value, err := size(ctx)
 			if err != nil {
 				return err
 			}

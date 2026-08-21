@@ -78,7 +78,10 @@ func NewKafkaPublisher(cfg config.Kafka) (*KafkaPublisher, error) {
 
 // Publish отправляет событие в топик.
 func (p *KafkaPublisher) Publish(ctx context.Context, event domain.Event) error {
-	ctx, span := tracer.Start(ctx, publishOperation+" "+p.topic, trace.WithSpanKind(trace.SpanKindProducer))
+	ctx, span := tracer.Start(ctx, publishOperation+" "+p.topic,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithNewRoot(),
+		trace.WithLinks(trace.LinkFromContext(ctx)))
 	defer span.End()
 
 	span.SetAttributes(
