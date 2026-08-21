@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 )
 
 // responseWriter запоминает код ответа и объём тела - это нужно логгеру,
@@ -52,6 +53,26 @@ func (w *responseWriter) Written() bool { return w.wroteHeader }
 
 // Unwrap нужен http.ResponseController, чтобы добраться до исходного writer'а.
 func (w *responseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func sanitizeID(raw string, maxLen int) string {
+	id := strings.TrimSpace(raw)
+	if id == "" || len(id) > maxLen {
+		return ""
+	}
+
+	for _, symbol := range id {
+		switch {
+		case symbol >= 'a' && symbol <= 'z',
+			symbol >= 'A' && symbol <= 'Z',
+			symbol >= '0' && symbol <= '9',
+			symbol == '-', symbol == '_', symbol == '.', symbol == ':':
+		default:
+			return ""
+		}
+	}
+
+	return id
+}
 
 func (w *responseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {

@@ -1,7 +1,6 @@
 FROM golang:1.26-alpine AS builder
 
 ARG APP=server
-# так нужно)
 ARG GOPROXY=direct
 ENV GOPROXY=${GOPROXY}
 ENV GOTOOLCHAIN=local

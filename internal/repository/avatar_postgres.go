@@ -157,6 +157,18 @@ func (r *AvatarRepository) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	return r.exec(ctx, "soft delete avatar", query, id)
 }
 
+// TotalStorageBytes - суммарный объём неудалённых аватарок.
+func (r *AvatarRepository) TotalStorageBytes(ctx context.Context) (int64, error) {
+	const query = `SELECT COALESCE(SUM(size_bytes), 0) FROM avatars WHERE deleted_at IS NULL`
+
+	var total int64
+	if err := r.pool.QueryRow(ctx, query).Scan(&total); err != nil {
+		return 0, fmt.Errorf("total storage bytes: %w", err)
+	}
+
+	return total, nil
+}
+
 // Ping проверяет доступность БД (используется в /health).
 func (r *AvatarRepository) Ping(ctx context.Context) error {
 	if err := r.pool.Ping(ctx); err != nil {

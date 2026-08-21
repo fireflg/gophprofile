@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os/signal"
 	"syscall"
-
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/repository"
 	"github.com/fireflg/gophprofile/internal/services"
 	"github.com/fireflg/gophprofile/internal/worker"
 	"github.com/fireflg/gophprofile/pkg/logger"
+	"github.com/fireflg/gophprofile/pkg/otelx"
 )
 
 // run собирает зависимости воркера и читает топик до сигнала остановки.
@@ -21,16 +21,27 @@ func run() error {
 		return err
 	}
 
-	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	tel, err := otelx.Setup(ctx, cfg.OTel, cfg.Metrics)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = zapLog.Sync() }()
 
-	runLog := logger.Component(zapLog, "worker")
+	appLog := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	otelx.SetErrorHandler(logger.Component(appLog, "otel"))
+
+	defer func() {
+		if shutdownErr := tel.Shutdown(ctx); shutdownErr != nil {
+			appLog.Error("shutdown telemetry", slog.Any("error", shutdownErr))
+		}
+	}()
+
+	go tel.Metrics.Serve(logger.Component(appLog, "metrics"))
+
+	runLog := logger.Component(appLog, "worker")
 
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {
@@ -47,19 +58,19 @@ func run() error {
 		repository.NewAvatarRepository(pool),
 		storage,
 		cfg.Image.ThumbnailSizes,
-		zapLog,
+		appLog,
 	)
 	if err != nil {
 		return err
 	}
 
-	consumer, err := worker.NewConsumer(cfg.Kafka, processor, zapLog)
+	consumer, err := worker.NewConsumer(cfg.Kafka, processor, appLog)
 	if err != nil {
 		return err
 	}
 
 	runLog.Info("worker started",
-		zap.String("topic", cfg.Kafka.Topic), zap.String("group_id", cfg.Kafka.GroupID))
+		slog.String("topic", cfg.Kafka.Topic), slog.String("group_id", cfg.Kafka.GroupID))
 
 	if err := consumer.Run(ctx); err != nil {
 		return err

@@ -14,7 +14,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/api"
 	"github.com/fireflg/gophprofile/internal/config"
@@ -22,6 +21,7 @@ import (
 	"github.com/fireflg/gophprofile/internal/handlers"
 	"github.com/fireflg/gophprofile/internal/services"
 	"github.com/fireflg/gophprofile/internal/worker"
+	"github.com/fireflg/gophprofile/pkg/logger"
 	"github.com/fireflg/gophprofile/web"
 )
 
@@ -46,7 +46,7 @@ func newTestEnv(t *testing.T, maxFileSize int64) *testEnv {
 		},
 	}
 
-	log := zap.NewNop()
+	log := logger.Nop()
 	repo := newFakeRepo()
 	storage := newFakeStorage("http://storage.test/avatars")
 

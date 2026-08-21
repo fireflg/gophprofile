@@ -3,18 +3,19 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os/signal"
 	"syscall"
 
-	"go.uber.org/zap"
-
 	"github.com/fireflg/gophprofile/internal/api"
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/handlers"
+	"github.com/fireflg/gophprofile/internal/metrics"
 	"github.com/fireflg/gophprofile/internal/repository"
 	"github.com/fireflg/gophprofile/internal/services"
 	"github.com/fireflg/gophprofile/pkg/logger"
+	"github.com/fireflg/gophprofile/pkg/otelx"
 	"github.com/fireflg/gophprofile/web"
 )
 
@@ -25,16 +26,27 @@ func run() error {
 		return err
 	}
 
-	zapLog, err := logger.New(cfg.App.Env, cfg.App.LogLevel)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	tel, err := otelx.Setup(ctx, cfg.OTel, cfg.Metrics)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = zapLog.Sync() }()
 
-	runLog := logger.Component(zapLog, "server")
+	appLog := logger.New(cfg.App.Env, cfg.App.LogLevel, tel.LoggerProvider())
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+	otelx.SetErrorHandler(logger.Component(appLog, "otel"))
+
+	defer func() {
+		if shutdownErr := tel.Shutdown(ctx); shutdownErr != nil {
+			appLog.Error("shutdown telemetry", slog.Any("error", shutdownErr))
+		}
+	}()
+
+	go tel.Metrics.Serve(logger.Component(appLog, "metrics"))
+
+	runLog := logger.Component(appLog, "server")
 
 	pool, err := repository.NewPool(ctx, cfg.Postgres)
 	if err != nil {
@@ -55,11 +67,15 @@ func run() error {
 
 	repo := repository.NewAvatarRepository(pool)
 
-	avatarService, err := services.NewAvatarService(repo, storage, publisher, cfg.Image, zapLog)
+	avatarService, err := services.NewAvatarService(repo, storage, publisher, cfg.Image, appLog)
 	if err != nil {
 		return err
 	}
 	defer avatarService.Wait()
+
+	if err = metrics.RegisterStorageGauge(repo.TotalStorageBytes); err != nil {
+		return err
+	}
 
 	static, err := web.Static()
 	if err != nil {
@@ -68,9 +84,9 @@ func run() error {
 
 	router := api.NewRouter(api.Deps{
 		Config:  cfg,
-		Logger:  zapLog,
-		Avatars: handlers.NewAvatarHandler(avatarService, zapLog),
-		Health: handlers.NewHealthHandler(zapLog,
+		Logger:  appLog,
+		Avatars: handlers.NewAvatarHandler(avatarService, appLog),
+		Health: handlers.NewHealthHandler(appLog,
 			handlers.Check{Name: "postgres", Probe: repo.Ping},
 			handlers.Check{Name: "s3", Probe: storage.Ping},
 			handlers.Check{Name: "broker", Probe: publisher.Ping},
@@ -87,7 +103,7 @@ func run() error {
 
 	go func() {
 		runLog.Info("http server started",
-			zap.String("addr", cfg.HTTP.Addr()), zap.String("env", cfg.App.Env))
+			slog.String("addr", cfg.HTTP.Addr()), slog.String("env", cfg.App.Env))
 
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

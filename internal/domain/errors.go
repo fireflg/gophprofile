@@ -26,3 +26,28 @@ var (
 	// ErrFileRequired — в multipart-форме нет поля file (400).
 	ErrFileRequired = errors.New("file is required")
 )
+
+// clientErrors — ошибки, вызванные запросом клиента
+var clientErrors = []error{
+	ErrAvatarNotFound,
+	ErrSizeNotFound,
+	ErrThumbnailNotReady,
+	ErrForbidden,
+	ErrUserIDRequired,
+	ErrInvalidAvatarID,
+	ErrUnsupportedFormat,
+	ErrUnsupportedTargetFormat,
+	ErrFileTooLarge,
+	ErrEmptyFile,
+	ErrFileRequired,
+}
+
+func IsClientError(err error) bool {
+	for _, target := range clientErrors {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+
+	return false
+}
