@@ -1,0 +1,13 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-migrations
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+data:
+{{- range $path, $content := .Files.Glob "files/migrations/*.sql" }}
+  {{ base $path }}: |
+{{ $content | toString | indent 4 }}
+{{- end }}
+{{- end }}

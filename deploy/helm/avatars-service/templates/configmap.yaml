@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-config
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.config.appEnv | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  HTTP_HOST: "0.0.0.0"
+  HTTP_PORT: {{ .Values.config.http.port | quote }}
+  HTTP_READ_TIMEOUT: {{ .Values.config.http.readTimeout | quote }}
+  HTTP_WRITE_TIMEOUT: {{ .Values.config.http.writeTimeout | quote }}
+  HTTP_SHUTDOWN_TIMEOUT: {{ .Values.config.http.shutdownTimeout | quote }}
+  POSTGRES_MAX_CONNS: {{ .Values.config.postgres.maxConns | quote }}
+  POSTGRES_MIN_CONNS: {{ .Values.config.postgres.minConns | quote }}
+  POSTGRES_MAX_CONN_LIFETIME: {{ .Values.config.postgres.maxConnLifetime | quote }}
+  S3_ENDPOINT: {{ .Values.config.s3.endpoint | quote }}
+  S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
+  S3_REGION: {{ .Values.config.s3.region | quote }}
+  S3_USE_SSL: {{ .Values.config.s3.useSSL | quote }}
+  S3_PUBLIC_BASE_URL: {{ .Values.config.s3.publicBaseURL | quote }}
+  KAFKA_BROKERS: {{ .Values.config.kafka.brokers | quote }}
+  KAFKA_TOPIC: {{ .Values.config.kafka.topic | quote }}
+  KAFKA_GROUP_ID: {{ .Values.config.kafka.groupID | quote }}
+  KAFKA_CLIENT_ID: {{ .Values.config.kafka.clientID | quote }}
+  MAX_FILE_SIZE: {{ .Values.config.media.maxFileSize | quote }}
+  ALLOWED_MIME_TYPES: {{ .Values.config.media.allowedMimeTypes | quote }}
+  THUMBNAIL_SIZES: {{ .Values.config.media.thumbnailSizes | quote }}
+  OTEL_ENABLED: {{ .Values.config.otel.enabled | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otel.endpoint | quote }}
+  OTEL_EXPORTER_OTLP_INSECURE: {{ .Values.config.otel.insecure | quote }}
+  OTEL_TRACES_SAMPLER_ARG: {{ .Values.config.otel.sampleRatio | quote }}
+  METRICS_ENABLED: {{ .Values.config.metrics.enabled | quote }}
+  METRICS_HOST: "0.0.0.0"
+  METRICS_PORT: {{ .Values.config.metrics.port | quote }}
+  METRICS_PATH: {{ .Values.config.metrics.path | quote }}

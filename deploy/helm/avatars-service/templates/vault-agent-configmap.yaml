@@ -1,0 +1,56 @@
+{{- if .Values.vault.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-vault-agent
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+data:
+  vault-agent.hcl: |
+    exit_after_auth = true
+    pid_file = "/vault/secrets/pidfile"
+
+    vault {
+      address = {{ .Values.vault.address | quote }}
+    }
+
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/{{ .Values.vault.authPath }}"
+
+        config = {
+          role = {{ .Values.vault.role | quote }}
+        }
+      }
+
+      sink "file" {
+        config = {
+          path = "/vault/secrets/token"
+        }
+      }
+    }
+
+    template {
+      destination = "/vault/secrets/config.json"
+      error_on_missing_key = true
+      contents = <<-EOT
+      {{ printf "{{- with secret %q -}}" .Values.vault.secretPath }}
+      {
+        "postgres": {"dsn": "{{ printf "{{ .Data.data.%s }}" .Values.vault.keys.postgresDSN }}"},
+        "s3": {
+          "access_key": "{{ printf "{{ .Data.data.%s }}" .Values.vault.keys.s3AccessKey }}",
+          "secret_key": "{{ printf "{{ .Data.data.%s }}" .Values.vault.keys.s3SecretKey }}"
+        }
+      }
+      {{ `{{- end -}}` }}
+      EOT
+    }
+
+    template {
+      destination = "/vault/secrets/postgres.dsn"
+      error_on_missing_key = true
+      contents = <<-EOT
+      {{ printf "{{- with secret %q -}}" .Values.vault.secretPath }}{{ printf "{{ .Data.data.%s }}" .Values.vault.keys.postgresDSN }}{{ `{{- end -}}` }}
+      EOT
+    }
+{{- end }}

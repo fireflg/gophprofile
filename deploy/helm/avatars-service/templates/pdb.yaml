@@ -1,0 +1,31 @@
+{{- if .Values.server.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-server
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  minAvailable: {{ .Values.server.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "avatars-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+{{- end }}
+{{- if .Values.worker.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-worker
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  minAvailable: {{ .Values.worker.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "avatars-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+{{- end }}

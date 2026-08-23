@@ -1,0 +1,18 @@
+{{- if .Values.grafanaDashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "avatars-service.fullname" . }}-dashboards
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+    {{ .Values.grafanaDashboards.label }}: {{ .Values.grafanaDashboards.labelValue | quote }}
+  {{- with .Values.grafanaDashboards.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+{{- range $path, $content := .Files.Glob "files/dashboards/*.json" }}
+  {{ base $path }}: |
+{{ $content | toString | indent 4 }}
+{{- end }}
+{{- end }}

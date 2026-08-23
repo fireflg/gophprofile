@@ -1,0 +1,80 @@
+image:
+  tag: staging
+  pullPolicy: Always
+
+server:
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+worker:
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: avatars.staging.example.com
+
+config:
+  appEnv: staging
+  logLevel: debug
+  s3:
+    endpoint: minio.staging.example.com:9000
+    useSSL: true
+    publicBaseURL: https://minio.staging.example.com/avatars
+  kafka:
+    brokers: kafka-0.staging.example.com:9092,kafka-1.staging.example.com:9092
+  otel:
+    endpoint: otel-collector.monitoring:4317
+    sampleRatio: 1
+
+secrets:
+  create: false
+
+vault:
+  enabled: true
+  address: https://vault.staging.example.com
+  role: avatars-service-staging
+  secretPath: secret/data/staging/avatars-service
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: prometheus
+
+grafanaDashboards:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+  egress:
+    rules:
+      - to:
+          - ipBlock:
+              cidr: 10.10.0.0/16
+        ports:
+          - port: 5432
+            protocol: TCP
+          - port: 9000
+            protocol: TCP
+          - port: 9092
+            protocol: TCP
+          - port: 8200
+            protocol: TCP
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+        ports:
+          - port: 4317
+            protocol: TCP

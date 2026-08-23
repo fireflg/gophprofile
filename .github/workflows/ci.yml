@@ -74,6 +74,32 @@ jobs:
       - name: Build binaries
         run: make build
 
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Chart migrations are up to date
+        run: |
+          make helm-sync
+          git diff --exit-code -- deploy/helm/avatars-service/files/migrations \
+            || { echo "Миграции в чарте разошлись с migrations/: запустите make helm-sync"; exit 1; }
+
+      - name: helm lint
+        run: make helm-lint
+
+      - name: Render manifests
+        run: |
+          for values in values.yaml values-staging.yaml values-production.yaml; do
+            helm template avatars-service deploy/helm/avatars-service \
+              -f "deploy/helm/avatars-service/$values" > /dev/null
+          done
+
   docker:
     name: Docker images
     runs-on: ubuntu-latest
