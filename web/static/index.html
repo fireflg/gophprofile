@@ -102,26 +102,45 @@
       <div id="galleryStatus" class="hidden px-4 py-3 rounded-lg font-mono text-sm"></div>
 
       <div id="gallery" class="grid grid-cols-2 sm:grid-cols-3 gap-4"></div>
-
-      <div id="metadataBox" class="hidden">
-        <div class="border-t border-white/20 pt-6">
-          <h3 class="text-lg font-semibold text-white mb-3">Metadata</h3>
-          <div class="bg-black/30 rounded-lg p-4 overflow-x-auto">
-            <pre id="metadataJson" class="text-green-400 text-sm font-mono whitespace-pre-wrap"></pre>
-          </div>
-        </div>
-      </div>
     </main>
   </div>
 </div>
 
-<div id="viewer" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm items-center justify-center p-4">
-  <button type="button" id="viewerClose" aria-label="Close"
-          class="absolute top-4 right-4 w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 text-white text-2xl leading-none transition-colors">
-    &times;
-  </button>
-  <img id="viewerImg" src="" alt="Full image"
-       class="max-h-[85vh] max-w-full object-contain rounded-xl shadow-2xl">
+<div id="viewer" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm items-center justify-center p-4 overflow-y-auto">
+  <div class="bg-slate-900/95 border border-white/20 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+    <header class="flex items-start justify-between gap-4 p-5 border-b border-white/10">
+      <div class="min-w-0">
+        <h3 class="text-lg font-semibold text-white">Avatar</h3>
+        <p id="viewerId" class="text-xs text-white/50 font-mono break-all"></p>
+      </div>
+      <button type="button" id="viewerClose" aria-label="Close"
+              class="shrink-0 w-10 h-10 rounded-lg bg-white/10 hover:bg-white/20 text-white text-2xl leading-none transition-colors">
+        &times;
+      </button>
+    </header>
+
+    <div class="p-5 grid gap-5 md:grid-cols-[minmax(0,1fr)_16rem]">
+      <div class="space-y-2">
+        <img id="viewerImg" src="" alt="Avatar"
+             class="w-full max-h-[55vh] object-contain rounded-xl bg-black/40">
+        <p id="viewerImgLabel" class="text-xs text-white/60 font-mono text-center"></p>
+      </div>
+
+      <dl id="viewerMeta" class="text-sm space-y-2"></dl>
+    </div>
+
+    <div class="px-5 pb-5 space-y-3">
+      <h4 class="text-sm font-semibold text-white">Thumbnails</h4>
+      <div id="viewerThumbs" class="flex flex-wrap gap-3"></div>
+    </div>
+
+    <details class="px-5 pb-5">
+      <summary class="text-sm text-white/70 cursor-pointer hover:text-white transition-colors">Raw metadata</summary>
+      <div class="bg-black/30 rounded-lg p-4 mt-3 overflow-x-auto">
+        <pre id="metadataJson" class="text-green-400 text-sm font-mono whitespace-pre-wrap"></pre>
+      </div>
+    </details>
+  </div>
 </div>
 
 <script>
@@ -252,11 +271,20 @@
   const loadBtn = document.getElementById('loadBtn');
   const gallery = document.getElementById('gallery');
   const galleryStatus = document.getElementById('galleryStatus');
-  const metadataBox = document.getElementById('metadataBox');
   const metadataJson = document.getElementById('metadataJson');
   const viewer = document.getElementById('viewer');
   const viewerImg = document.getElementById('viewerImg');
+  const viewerImgLabel = document.getElementById('viewerImgLabel');
+  const viewerId = document.getElementById('viewerId');
+  const viewerMeta = document.getElementById('viewerMeta');
+  const viewerThumbs = document.getElementById('viewerThumbs');
   const viewerClose = document.getElementById('viewerClose');
+
+  const statusColors = {ready: 'text-green-300', processing: 'text-yellow-300', failed: 'text-red-300'};
+
+  let detailId = null;
+  let detailStatus = null;
+  let detailTimer = null;
 
   viewerClose.addEventListener('click', closeViewer);
 
@@ -272,17 +300,173 @@
     }
   });
 
-  function openViewer(avatarId) {
-    viewerImg.src = `/api/v1/avatars/${avatarId}?size=original`;
+  function openDetail(avatarId) {
+    detailId = avatarId;
+    detailStatus = null;
+
+    viewerId.textContent = avatarId;
     viewer.classList.remove('hidden');
     viewer.classList.add('flex');
     document.body.classList.add('overflow-hidden');
+
+    loadDetail(avatarId);
+  }
+
+  async function loadDetail(avatarId) {
+    try {
+      const response = await fetch(`/api/v1/avatars/${avatarId}/metadata`);
+
+      if (!response.ok) {
+        setGalleryStatus(`HTTP ${response.status} ${response.statusText}`, 'error');
+        return;
+      }
+
+      const data = await response.json();
+
+      if (detailId === avatarId) {
+        renderDetail(data);
+      }
+    } catch (error) {
+      setGalleryStatus(`Network error: ${error.message}`, 'error');
+    }
+  }
+
+  function renderDetail(data) {
+    metadataJson.textContent = JSON.stringify(data, null, 2);
+
+    if (!viewerImg.getAttribute('src')) {
+      showSize(data.id, 'original');
+    }
+
+    renderDetailMeta(data);
+    renderDetailThumbnails(data);
+
+    if (detailStatus === 'processing' && data.status !== 'processing') {
+      loadGallery();
+    }
+
+    detailStatus = data.status;
+
+    clearTimeout(detailTimer);
+
+    if (data.status === 'processing') {
+      detailTimer = setTimeout(() => loadDetail(data.id), 2000);
+    }
+  }
+
+  function renderDetailMeta(data) {
+    const dimensions = data.dimensions && data.dimensions.width
+            ? `${data.dimensions.width}×${data.dimensions.height}`
+            : '—';
+
+    const rows = [
+      ['Status', data.status, statusColors[data.status] || 'text-white/80'],
+      ['File', data.file_name, 'text-white/80'],
+      ['Type', data.mime_type, 'text-white/80'],
+      ['Original', formatBytes(data.size), 'text-white/80'],
+      ['Dimensions', dimensions, 'text-white/80'],
+      ['Created', new Date(data.created_at).toLocaleString(), 'text-white/80']
+    ];
+
+    viewerMeta.innerHTML = '';
+
+    rows.forEach(([label, value, valueClass]) => {
+      const term = document.createElement('dt');
+      term.className = 'text-xs uppercase tracking-wide text-white/40';
+      term.textContent = label;
+
+      const description = document.createElement('dd');
+      description.className = `font-mono break-all ${valueClass}`;
+      description.textContent = value;
+
+      viewerMeta.appendChild(term);
+      viewerMeta.appendChild(description);
+    });
+  }
+
+  function renderDetailThumbnails(data) {
+    const thumbnails = data.thumbnails || [];
+
+    viewerThumbs.innerHTML = '';
+
+    if (thumbnails.length === 0) {
+      const note = document.createElement('p');
+      note.className = 'text-sm text-white/60';
+      note.textContent = data.status === 'processing'
+              ? 'The worker is still cutting thumbnails, this view refreshes itself'
+              : 'No thumbnails for this avatar';
+
+      viewerThumbs.appendChild(note);
+
+      return;
+    }
+
+    const original = renderSizeButton(data.id, 'original', 'original');
+    viewerThumbs.appendChild(original);
+
+    thumbnails.forEach(thumbnail => {
+      viewerThumbs.appendChild(renderSizeButton(data.id, thumbnail.size, thumbnail.size));
+    });
+  }
+
+  function renderSizeButton(avatarId, size, label) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'group space-y-1 focus:outline-none';
+
+    const img = document.createElement('img');
+    img.className = 'w-24 h-24 object-cover rounded-lg bg-black/40 border border-white/20 group-hover:border-white/60 transition-colors';
+    img.src = `/api/v1/avatars/${avatarId}?size=${encodeURIComponent(size)}`;
+    img.alt = label;
+    img.loading = 'lazy';
+
+    const caption = document.createElement('div');
+    caption.className = 'text-xs font-mono text-white/60 group-hover:text-white transition-colors';
+    caption.textContent = label;
+
+    button.appendChild(img);
+    button.appendChild(caption);
+    button.addEventListener('click', () => showSize(avatarId, size));
+
+    return button;
+  }
+
+  function showSize(avatarId, size) {
+    viewerImg.src = `/api/v1/avatars/${avatarId}?size=${encodeURIComponent(size)}`;
+    viewerImgLabel.textContent = size === 'original' ? 'original' : `thumbnail ${size}`;
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes) {
+      return '—';
+    }
+
+    const units = ['B', 'KB', 'MB'];
+    let value = bytes;
+    let unit = 0;
+
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+
+    return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
   }
 
   function closeViewer() {
+    clearTimeout(detailTimer);
+
+    detailTimer = null;
+    detailId = null;
+    detailStatus = null;
+
     viewer.classList.add('hidden');
     viewer.classList.remove('flex');
     viewerImg.removeAttribute('src');
+    viewerImgLabel.textContent = '';
+    viewerMeta.innerHTML = '';
+    viewerThumbs.innerHTML = '';
+    metadataJson.textContent = '';
     document.body.classList.remove('overflow-hidden');
   }
 
@@ -298,7 +482,6 @@
     const userId = galleryUserId.value.trim();
 
     gallery.innerHTML = '';
-    metadataBox.classList.add('hidden');
 
     if (!userId) {
       setGalleryStatus('Enter a user ID', 'error');
@@ -324,30 +507,53 @@
       }
 
       setGalleryStatus(`${items.length} avatar(s)`, 'ok');
-      items.forEach(item => gallery.appendChild(renderAvatarCard(item, userId)));
+      items.forEach((item, index) => gallery.appendChild(renderAvatarCard(item, userId, index === 0)));
     } catch (error) {
       setGalleryStatus(`Network error: ${error.message}`, 'error');
     }
   }
 
-  function renderAvatarCard(item, userId) {
+  function renderAvatarCard(item, userId, isCurrent) {
     const card = document.createElement('div');
     card.className = 'bg-white/10 border border-white/20 rounded-xl p-3 space-y-2';
+
+    const frame = document.createElement('div');
+    frame.className = 'relative';
 
     const img = document.createElement('img');
     img.className = 'w-full aspect-square object-cover rounded-lg bg-black/30 cursor-zoom-in hover:opacity-90 transition-opacity';
     img.alt = item.id;
     img.loading = 'lazy';
-    img.title = 'Click to open the full image';
-    setWithFallback(img, [
-      `/api/v1/avatars/${item.id}?size=300x300`,
-      `/api/v1/avatars/${item.id}?size=100x100`,
-      `/api/v1/avatars/${item.id}?size=original`
-    ]);
-    img.addEventListener('click', () => openViewer(item.id));
-    card.appendChild(img);
+    img.title = 'Click to open the avatar';
 
-    const statusColors = {ready: 'text-green-300', processing: 'text-yellow-300', failed: 'text-red-300'};
+    if (item.status === 'ready') {
+      setWithFallback(img, [
+        `/api/v1/avatars/${item.id}?size=300x300`,
+        `/api/v1/avatars/${item.id}?size=100x100`,
+        `/api/v1/avatars/${item.id}?size=original`
+      ]);
+    } else {
+      img.src = `/api/v1/avatars/${item.id}?size=original`;
+    }
+
+    img.addEventListener('click', () => openDetail(item.id));
+    frame.appendChild(img);
+
+    if (item.status !== 'ready') {
+      const source = document.createElement('div');
+      source.className = 'absolute inset-x-0 bottom-0 py-1 rounded-b-lg bg-black/70 text-[11px] font-mono text-center text-white/80';
+      source.textContent = 'original · no thumbnail yet';
+      frame.appendChild(source);
+    }
+
+    if (isCurrent) {
+      const badge = document.createElement('div');
+      badge.className = 'absolute top-2 left-2 px-2 py-0.5 rounded-md bg-purple-600/90 text-[11px] font-mono text-white';
+      badge.textContent = 'current';
+      frame.appendChild(badge);
+    }
+
+    card.appendChild(frame);
 
     const status = document.createElement('div');
     status.className = 'text-xs font-mono ' + (statusColors[item.status] || 'text-white/70');
@@ -362,12 +568,12 @@
     const actions = document.createElement('div');
     actions.className = 'flex gap-2 pt-1';
 
-    const metaBtn = document.createElement('button');
-    metaBtn.type = 'button';
-    metaBtn.className = 'flex-1 text-xs bg-white/10 hover:bg-white/20 text-white py-1.5 rounded-md transition-colors';
-    metaBtn.textContent = 'Meta';
-    metaBtn.addEventListener('click', () => showMetadata(item.id));
-    actions.appendChild(metaBtn);
+    const openBtn = document.createElement('button');
+    openBtn.type = 'button';
+    openBtn.className = 'flex-1 text-xs bg-white/10 hover:bg-white/20 text-white py-1.5 rounded-md transition-colors';
+    openBtn.textContent = 'Open';
+    openBtn.addEventListener('click', () => openDetail(item.id));
+    actions.appendChild(openBtn);
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
@@ -398,18 +604,6 @@
     img.src = sources[index];
   }
 
-  async function showMetadata(avatarId) {
-    try {
-      const response = await fetch(`/api/v1/avatars/${avatarId}/metadata`);
-      const data = await response.json();
-
-      metadataBox.classList.remove('hidden');
-      metadataJson.textContent = JSON.stringify(data, null, 2);
-    } catch (error) {
-      setGalleryStatus(`Network error: ${error.message}`, 'error');
-    }
-  }
-
   async function deleteAvatar(avatarId, userId) {
     try {
       const response = await fetch(`/api/v1/avatars/${avatarId}`, {
@@ -422,6 +616,10 @@
       if (response.status !== 204) {
         setGalleryStatus(`HTTP ${response.status} ${response.statusText}`, 'error');
         return;
+      }
+
+      if (detailId === avatarId) {
+        closeViewer();
       }
 
       loadGallery();

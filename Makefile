@@ -1,4 +1,4 @@
-.PHONY: build run-server run-worker test test-docker test-all cover cover-html mocks lint tidy up down migrate-up migrate-down
+.PHONY: build run-server run-worker test test-docker test-all cover cover-html mocks lint tidy up up-infra up-monitoring down migrate-up migrate-down
 
 BIN_DIR := bin
 MIGRATE_DSN ?= postgres://avatars:avatars@localhost:5432/avatars?sslmode=disable
@@ -44,6 +44,12 @@ tidy:
 
 up:
 	docker compose -f docker/docker-compose.yml up -d --build
+
+up-infra:
+	docker compose -f docker/infrastructure/docker-compose.yml up -d
+
+up-monitoring:
+	docker compose -f docker/monitoring/docker-compose.yml up -d
 
 down:
 	docker compose -f docker/docker-compose.yml down -v

@@ -4,21 +4,25 @@ package api
 import (
 	"compress/gzip"
 	"io/fs"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
-	"go.uber.org/zap"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/handlers"
 	"github.com/fireflg/gophprofile/internal/middleware"
 )
 
+// healthPath - маршрут проверки для хелсчека.
+const healthPath = "/health"
+
 // Deps - зависимости роутера.
 type Deps struct {
 	Config  *config.Config
-	Logger  *zap.Logger
+	Logger  *slog.Logger
 	Avatars *handlers.AvatarHandler
 	Health  *handlers.HealthHandler
 	// Static - статика веб-интерфейса; nil отключает раздачу.
@@ -34,15 +38,18 @@ func NewRouter(deps Deps) http.Handler {
 
 	router.Use(
 		middleware.RequestID,
-		chimw.Recoverer,
+		middleware.UserID(handlers.HeaderUserID),
+		middleware.Trace,
+		middleware.Metrics(healthPath),
 		middleware.Logger(deps.Logger),
+		middleware.Recover(deps.Logger),
 		middleware.Gzip(gzip.DefaultCompression),
 	)
 
 	router.NotFound(handlers.NotFound)
 	router.MethodNotAllowed(handlers.MethodNotAllowed)
 
-	router.Get("/health", deps.Health.Health)
+	router.Get(healthPath, deps.Health.Health)
 
 	uploadLimit := deps.Config.Image.MaxFileSize + multipartOverhead
 
@@ -60,5 +67,9 @@ func NewRouter(deps Deps) http.Handler {
 		router.Handle("/*", http.FileServerFS(deps.Static))
 	}
 
-	return router
+	return otelhttp.NewHandler(router, "http",
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != healthPath
+		}),
+	)
 }

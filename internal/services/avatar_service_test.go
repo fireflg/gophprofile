@@ -8,23 +8,43 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.uber.org/mock/gomock"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
 	"github.com/fireflg/gophprofile/internal/domain/mocks"
 	"github.com/fireflg/gophprofile/internal/services"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 const testMaxFileSize = 10 << 20
+
+var spanRecorder = tracetest.NewSpanRecorder()
+
+func TestMain(m *testing.M) {
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spanRecorder)))
+
+	os.Exit(m.Run())
+}
+
+func recordSpans(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+
+	spanRecorder.Reset()
+
+	return spanRecorder
+}
 
 // serviceMocks — набор моков портов, из которых собран сервис.
 type serviceMocks struct {
@@ -49,7 +69,7 @@ func newService(t *testing.T) (*services.AvatarService, serviceMocks) {
 		ThumbnailSizes:   []config.Size{{Width: 100, Height: 100}},
 	}
 
-	service, err := services.NewAvatarService(deps.repo, deps.storage, deps.publisher, cfg, zap.NewNop())
+	service, err := services.NewAvatarService(deps.repo, deps.storage, deps.publisher, cfg, logger.Nop())
 	require.NoError(t, err)
 
 	return service, deps
@@ -79,7 +99,7 @@ func TestNewAvatarServiceRejectsInvalidImageConfig(t *testing.T) {
 				mocks.NewMockFileStorage(ctrl),
 				mocks.NewMockEventPublisher(ctrl),
 				tc.cfg,
-				zap.NewNop(),
+				logger.Nop(),
 			)
 			require.ErrorContains(t, err, tc.want)
 		})
@@ -352,33 +372,6 @@ func TestPublishFailureDoesNotBreakDelete(t *testing.T) {
 	service.Wait()
 }
 
-func TestServiceLogsAreTaggedWithComponent(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	repo := mocks.NewMockAvatarRepository(ctrl)
-	storage := mocks.NewMockFileStorage(ctrl)
-	publisher := mocks.NewMockEventPublisher(ctrl)
-
-	core, logs := observer.New(zapcore.DebugLevel)
-
-	service, err := services.NewAvatarService(repo, storage, publisher, config.Image{
-		MaxFileSize:      testMaxFileSize,
-		AllowedMimeTypes: []string{"image/png"},
-	}, zap.New(core))
-	require.NoError(t, err)
-
-	avatar := readyAvatar()
-
-	repo.EXPECT().GetByID(gomock.Any(), avatar.ID).Return(avatar, nil)
-	repo.EXPECT().SoftDelete(gomock.Any(), avatar.ID).Return(nil)
-	publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(errors.New("kafka is down"))
-
-	require.NoError(t, service.Delete(t.Context(), avatar.ID, avatar.UserID))
-	service.Wait()
-
-	require.Equal(t, 1, logs.Len())
-	require.Equal(t, "avatar_service", logs.All()[0].ContextMap()["component"])
-}
-
 func TestDeleteDoesNotWaitForPublish(t *testing.T) {
 	service, deps := newService(t)
 
@@ -442,6 +435,66 @@ func TestURLDelegatesToStorage(t *testing.T) {
 
 	require.Equal(t, "http://storage.test/avatars/user-1/original.png",
 		service.URL("avatars/user-1/original.png"))
+}
+
+func TestSpanStatusSetOnlyForServerErrors(t *testing.T) {
+	recorder := recordSpans(t)
+
+	service, deps := newService(t)
+
+	foreign := readyAvatar()
+	broken := readyAvatar()
+
+	deps.repo.EXPECT().GetByID(gomock.Any(), foreign.ID).Return(foreign, nil)
+	deps.repo.EXPECT().GetByID(gomock.Any(), broken.ID).Return(nil, errors.New("база недоступна"))
+
+	require.ErrorIs(t, service.Delete(t.Context(), foreign.ID, "user-2"), domain.ErrForbidden)
+	require.ErrorContains(t, service.Delete(t.Context(), broken.ID, broken.UserID), "база недоступна")
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 2)
+	require.Equal(t, codes.Unset, spans[0].Status().Code)
+	require.Equal(t, codes.Error, spans[1].Status().Code)
+}
+
+func TestReadAndDeleteScenariosOpenSpans(t *testing.T) {
+	recorder := recordSpans(t)
+
+	service, deps := newService(t)
+	avatar := readyAvatar()
+
+	deps.repo.EXPECT().GetByID(gomock.Any(), avatar.ID).Return(avatar, nil).Times(2)
+	deps.repo.EXPECT().ListByUser(gomock.Any(), avatar.UserID, 10, 0).Return([]*domain.Avatar{avatar}, nil)
+	deps.repo.EXPECT().GetLatestByUser(gomock.Any(), avatar.UserID).Return(avatar, nil)
+	deps.repo.EXPECT().SoftDelete(gomock.Any(), avatar.ID).Return(nil)
+	deps.publisher.EXPECT().Publish(gomock.Any(), gomock.Any()).Return(nil)
+
+	_, err := service.GetMetadata(t.Context(), avatar.ID)
+	require.NoError(t, err)
+
+	_, err = service.ListByUser(t.Context(), avatar.UserID, 10, 0)
+	require.NoError(t, err)
+
+	require.NoError(t, service.DeleteUserAvatar(t.Context(), avatar.UserID, avatar.UserID))
+	service.Wait()
+
+	spans := map[string]sdktrace.ReadOnlySpan{}
+	for _, span := range recorder.Ended() {
+		spans[span.Name()] = span
+	}
+
+	require.Contains(t, spans, "get_metadata")
+	require.Contains(t, spans, "list_by_user")
+	require.Contains(t, spans, "delete_user_avatar")
+
+	require.Contains(t, spans["get_metadata"].Attributes(), attribute.String("avatar.id", avatar.ID.String()))
+	require.Contains(t, spans["list_by_user"].Attributes(), attribute.String("user_id", avatar.UserID))
+	require.Contains(t, spans["list_by_user"].Attributes(), attribute.Int("avatars.count", 1))
+	require.Contains(t, spans["delete_user_avatar"].Attributes(), attribute.String("requester_id", avatar.UserID))
+
+	require.Equal(t,
+		spans["delete_user_avatar"].SpanContext().SpanID(),
+		spans["delete_avatar"].Parent().SpanID())
 }
 
 func readyAvatar() *domain.Avatar {

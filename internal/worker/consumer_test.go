@@ -14,13 +14,16 @@ import (
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.uber.org/mock/gomock"
-	"go.uber.org/zap"
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
 	domainmocks "github.com/fireflg/gophprofile/internal/domain/mocks"
 	workermocks "github.com/fireflg/gophprofile/internal/worker/mocks"
+	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
 type consumerFixture struct {
@@ -39,7 +42,7 @@ func newConsumerFixture(t *testing.T) *consumerFixture {
 	storage := domainmocks.NewMockFileStorage(ctrl)
 
 	sizes := []config.Size{{Width: 100, Height: 100}}
-	log := zap.NewNop()
+	log := logger.Nop()
 
 	processor, err := NewProcessor(repo, storage, sizes, log)
 	require.NoError(t, err)
@@ -102,7 +105,7 @@ func fetchThenStop(reader *workermocks.MockKafkaReader, msg kafka.Message) {
 }
 
 func TestNewConsumerRejectsIncompleteConfig(t *testing.T) {
-	log := zap.NewNop()
+	log := logger.Nop()
 
 	_, err := NewConsumer(config.Kafka{Topic: "avatars.events", GroupID: "avatars-worker"}, nil, log)
 	require.ErrorContains(t, err, "brokers")
@@ -245,5 +248,47 @@ func TestRunClosesReaderOnExit(t *testing.T) {
 func TestHandleMessageSkipsMalformedPayload(t *testing.T) {
 	fixture := newConsumerFixture(t)
 
-	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), []byte("{не json")))
+	msg := kafka.Message{Topic: "avatars.events", Partition: 3, Offset: 42, Value: []byte("{не json")}
+
+	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), msg))
+}
+
+func TestHandleMessageReturnsProcessingFailure(t *testing.T) {
+	fixture := newConsumerFixture(t)
+
+	event := uploadedMessageEvent()
+
+	fixture.repo.EXPECT().
+		GetByID(gomock.Any(), event.AvatarID).
+		Return(nil, errors.New("база недоступна"))
+
+	err := fixture.consumer.HandleMessage(t.Context(), eventMessage(t, event))
+	require.ErrorContains(t, err, "база недоступна")
+}
+
+func TestHandleMessageSpanFollowsMessagingConvention(t *testing.T) {
+	recorder := recordSpans(t)
+	fixture := newConsumerFixture(t)
+
+	msg := kafka.Message{Topic: "avatars.events", Partition: 3, Offset: 42, Value: []byte("{не json")}
+	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), msg))
+
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	require.Equal(t, "process avatars.events", spans[0].Name())
+	require.Contains(t, spans[0].Attributes(), semconv.MessagingOperationName("process"))
+	require.Contains(t, spans[0].Attributes(), semconv.MessagingOperationTypeProcess)
+	require.Contains(t, spans[0].Attributes(), semconv.MessagingDestinationName("avatars.events"))
+}
+
+func recordSpans(t *testing.T) *tracetest.SpanRecorder {
+	t.Helper()
+
+	recorder := tracetest.NewSpanRecorder()
+	previous := tracer
+	tracer = sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder)).Tracer("test")
+
+	t.Cleanup(func() { tracer = previous })
+
+	return recorder
 }
