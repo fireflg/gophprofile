@@ -3,7 +3,7 @@ fullnameOverride: ""
 
 image:
   repository: avatars-service
-  tag: latest
+  tag: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
 

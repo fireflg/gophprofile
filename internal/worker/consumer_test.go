@@ -23,12 +23,16 @@ import (
 	"github.com/fireflg/gophprofile/internal/domain"
 	domainmocks "github.com/fireflg/gophprofile/internal/domain/mocks"
 	workermocks "github.com/fireflg/gophprofile/internal/worker/mocks"
+	kafkaxmocks "github.com/fireflg/gophprofile/pkg/kafkax/mocks"
 	"github.com/fireflg/gophprofile/pkg/logger"
 )
+
+const testTopic = "avatars.events"
 
 type consumerFixture struct {
 	consumer *Consumer
 	reader   *workermocks.MockKafkaReader
+	client   *kafkaxmocks.MockMetadataClient
 	repo     *domainmocks.MockAvatarRepository
 	storage  *domainmocks.MockFileStorage
 }
@@ -38,6 +42,7 @@ func newConsumerFixture(t *testing.T) *consumerFixture {
 
 	ctrl := gomock.NewController(t)
 	reader := workermocks.NewMockKafkaReader(ctrl)
+	client := kafkaxmocks.NewMockMetadataClient(ctrl)
 	repo := domainmocks.NewMockAvatarRepository(ctrl)
 	storage := domainmocks.NewMockFileStorage(ctrl)
 
@@ -50,10 +55,13 @@ func newConsumerFixture(t *testing.T) *consumerFixture {
 	return &consumerFixture{
 		consumer: &Consumer{
 			reader:    reader,
+			client:    client,
+			topic:     testTopic,
 			processor: processor,
 			log:       log,
 		},
 		reader:  reader,
+		client:  client,
 		repo:    repo,
 		storage: storage,
 	}
@@ -65,7 +73,7 @@ func eventMessage(t *testing.T, event domain.Event) kafka.Message {
 	payload, err := json.Marshal(event)
 	require.NoError(t, err)
 
-	return kafka.Message{Topic: "avatars.events", Partition: 0, Offset: 7, Value: payload}
+	return kafka.Message{Topic: testTopic, Partition: 0, Offset: 7, Value: payload}
 }
 
 func deletedEvent() domain.Event {
@@ -107,13 +115,13 @@ func fetchThenStop(reader *workermocks.MockKafkaReader, msg kafka.Message) {
 func TestNewConsumerRejectsIncompleteConfig(t *testing.T) {
 	log := logger.Nop()
 
-	_, err := NewConsumer(config.Kafka{Topic: "avatars.events", GroupID: "avatars-worker"}, nil, log)
+	_, err := NewConsumer(config.Kafka{Topic: testTopic, GroupID: "avatars-worker"}, nil, log)
 	require.ErrorContains(t, err, "brokers")
 
 	_, err = NewConsumer(config.Kafka{Brokers: []string{"localhost:9092"}, GroupID: "avatars-worker"}, nil, log)
 	require.ErrorContains(t, err, "topic")
 
-	_, err = NewConsumer(config.Kafka{Brokers: []string{"localhost:9092"}, Topic: "avatars.events"}, nil, log)
+	_, err = NewConsumer(config.Kafka{Brokers: []string{"localhost:9092"}, Topic: testTopic}, nil, log)
 	require.ErrorContains(t, err, "group id")
 }
 
@@ -176,7 +184,7 @@ func TestRunDoesNotCommitWhenHandlingFails(t *testing.T) {
 func TestRunCommitsMalformedMessage(t *testing.T) {
 	fixture := newConsumerFixture(t)
 
-	fetchThenStop(fixture.reader, kafka.Message{Topic: "avatars.events", Value: []byte("{не json")})
+	fetchThenStop(fixture.reader, kafka.Message{Topic: testTopic, Value: []byte("{не json")})
 	fixture.reader.EXPECT().CommitMessages(gomock.Any(), gomock.Any()).Return(nil)
 
 	require.NoError(t, fixture.consumer.Run(t.Context()))
@@ -245,10 +253,66 @@ func TestRunClosesReaderOnExit(t *testing.T) {
 	require.NoError(t, fixture.consumer.Run(t.Context()))
 }
 
+func TestPingFailsWhenLoopIsNotRunning(t *testing.T) {
+	fixture := newConsumerFixture(t)
+
+	require.ErrorContains(t, fixture.consumer.Ping(t.Context()), "not running")
+
+	fixture.reader.EXPECT().FetchMessage(gomock.Any()).Return(kafka.Message{}, io.EOF)
+	fixture.reader.EXPECT().Close().Return(nil)
+
+	require.NoError(t, fixture.consumer.Run(t.Context()))
+
+	require.ErrorContains(t, fixture.consumer.Ping(t.Context()), "not running")
+}
+
+func TestPingChecksTopicMetadataWhileRunning(t *testing.T) {
+	fixture := newConsumerFixture(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	started := make(chan struct{})
+
+	fixture.reader.EXPECT().
+		FetchMessage(gomock.Any()).
+		DoAndReturn(func(ctx context.Context) (kafka.Message, error) {
+			close(started)
+			<-ctx.Done()
+
+			return kafka.Message{}, ctx.Err()
+		})
+	fixture.reader.EXPECT().Close().Return(nil)
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- fixture.consumer.Run(ctx) }()
+
+	<-started
+
+	fixture.client.EXPECT().Metadata(gomock.Any(), gomock.Any()).Return(topicMetadata(kafka.Topic{
+		Name:       testTopic,
+		Partitions: []kafka.Partition{{Topic: testTopic, ID: 0}},
+	}), nil)
+	require.NoError(t, fixture.consumer.Ping(ctx))
+
+	fixture.client.EXPECT().Metadata(gomock.Any(), gomock.Any()).Return(topicMetadata(kafka.Topic{
+		Name: testTopic,
+	}), nil)
+	require.ErrorContains(t, fixture.consumer.Ping(ctx), "no partitions")
+
+	cancel()
+	require.NoError(t, <-stopped)
+}
+
+func topicMetadata(topic kafka.Topic) *kafka.MetadataResponse {
+	return &kafka.MetadataResponse{
+		Brokers: []kafka.Broker{{ID: 1, Host: "localhost", Port: 9092}},
+		Topics:  []kafka.Topic{topic},
+	}
+}
+
 func TestHandleMessageSkipsMalformedPayload(t *testing.T) {
 	fixture := newConsumerFixture(t)
 
-	msg := kafka.Message{Topic: "avatars.events", Partition: 3, Offset: 42, Value: []byte("{не json")}
+	msg := kafka.Message{Topic: testTopic, Partition: 3, Offset: 42, Value: []byte("{не json")}
 
 	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), msg))
 }
@@ -270,7 +334,7 @@ func TestHandleMessageSpanFollowsMessagingConvention(t *testing.T) {
 	recorder := recordSpans(t)
 	fixture := newConsumerFixture(t)
 
-	msg := kafka.Message{Topic: "avatars.events", Partition: 3, Offset: 42, Value: []byte("{не json")}
+	msg := kafka.Message{Topic: testTopic, Partition: 3, Offset: 42, Value: []byte("{не json")}
 	require.NoError(t, fixture.consumer.HandleMessage(t.Context(), msg))
 
 	spans := recorder.Ended()
@@ -278,7 +342,7 @@ func TestHandleMessageSpanFollowsMessagingConvention(t *testing.T) {
 	require.Equal(t, "process avatars.events", spans[0].Name())
 	require.Contains(t, spans[0].Attributes(), semconv.MessagingOperationName("process"))
 	require.Contains(t, spans[0].Attributes(), semconv.MessagingOperationTypeProcess)
-	require.Contains(t, spans[0].Attributes(), semconv.MessagingDestinationName("avatars.events"))
+	require.Contains(t, spans[0].Attributes(), semconv.MessagingDestinationName(testTopic))
 }
 
 func recordSpans(t *testing.T) *tracetest.SpanRecorder {

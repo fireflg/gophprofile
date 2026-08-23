@@ -196,46 +196,6 @@ func TestPingFailsWhenMetadataUnavailable(t *testing.T) {
 	require.ErrorIs(t, publisher.Ping(t.Context()), metadataErr)
 }
 
-func TestPingFailsWhenClusterHasNoBrokers(t *testing.T) {
-	publisher, _, client := newTestPublisher(t)
-
-	client.EXPECT().Metadata(gomock.Any(), gomock.Any()).Return(&kafka.MetadataResponse{}, nil)
-
-	require.ErrorContains(t, publisher.Ping(t.Context()), "no brokers")
-}
-
-func TestPingFailsWhenTopicReportsError(t *testing.T) {
-	publisher, _, client := newTestPublisher(t)
-
-	client.EXPECT().Metadata(gomock.Any(), gomock.Any()).Return(metadataWithTopic(kafka.Topic{
-		Name:  testTopic,
-		Error: kafka.UnknownTopicOrPartition,
-	}), nil)
-
-	require.ErrorIs(t, publisher.Ping(t.Context()), kafka.UnknownTopicOrPartition)
-}
-
-func TestPingFailsWhenTopicHasNoPartitions(t *testing.T) {
-	publisher, _, client := newTestPublisher(t)
-
-	client.EXPECT().Metadata(gomock.Any(), gomock.Any()).Return(metadataWithTopic(kafka.Topic{
-		Name: testTopic,
-	}), nil)
-
-	require.ErrorContains(t, publisher.Ping(t.Context()), "no partitions")
-}
-
-func TestPingFailsWhenTopicIsMissing(t *testing.T) {
-	publisher, _, client := newTestPublisher(t)
-
-	client.EXPECT().Metadata(gomock.Any(), gomock.Any()).Return(metadataWithTopic(kafka.Topic{
-		Name:       "other.topic",
-		Partitions: []kafka.Partition{{Topic: "other.topic", ID: 0}},
-	}), nil)
-
-	require.ErrorContains(t, publisher.Ping(t.Context()), "is missing")
-}
-
 func TestCloseClosesWriter(t *testing.T) {
 	publisher, writer, _ := newTestPublisher(t)
 	closeErr := errors.New("не удалось дозаписать буфер")

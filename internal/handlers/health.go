@@ -11,6 +11,9 @@ import (
 	"github.com/fireflg/gophprofile/pkg/logger"
 )
 
+// HealthPath - маршрут для хелсчека
+const HealthPath = "/health"
+
 // checkTimeout - предел ожидания одной проверки компонента.
 const checkTimeout = 3 * time.Second
 

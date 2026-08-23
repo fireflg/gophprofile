@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/segmentio/kafka-go"
 	"go.opentelemetry.io/otel"
@@ -21,6 +22,7 @@ import (
 	"github.com/fireflg/gophprofile/internal/domain"
 	"github.com/fireflg/gophprofile/internal/metrics"
 	"github.com/fireflg/gophprofile/pkg/ctxmeta"
+	"github.com/fireflg/gophprofile/pkg/kafkax"
 	"github.com/fireflg/gophprofile/pkg/logger"
 	"github.com/fireflg/gophprofile/pkg/otelx"
 )
@@ -46,8 +48,12 @@ type statsReader interface {
 // Consumer - потребитель событий из Kafka.
 type Consumer struct {
 	reader    KafkaReader
+	client    kafkax.MetadataClient
+	topic     string
 	processor *Processor
 	log       *slog.Logger
+
+	running atomic.Bool
 }
 
 // NewConsumer создаёт консьюмера.
@@ -66,6 +72,8 @@ func NewConsumer(cfg config.Kafka, processor *Processor, log *slog.Logger) (*Con
 
 	readerLog := logger.Component(log, "kafka_reader")
 
+	addr := kafka.TCP(cfg.Brokers...)
+
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     cfg.Brokers,
 		Topic:       cfg.Topic,
@@ -74,7 +82,13 @@ func NewConsumer(cfg config.Kafka, processor *Processor, log *slog.Logger) (*Con
 		ErrorLogger: kafkaLogger(readerLog.Error),
 	})
 
-	consumer := &Consumer{reader: reader, processor: processor, log: logger.Component(log, "consumer")}
+	consumer := &Consumer{
+		reader:    reader,
+		client:    &kafka.Client{Addr: addr},
+		topic:     cfg.Topic,
+		processor: processor,
+		log:       logger.Component(log, "consumer"),
+	}
 
 	if err := metrics.RegisterConsumerLagGauge(consumer.lag); err != nil {
 		return nil, fmt.Errorf("register consumer lag gauge: %w", err)
@@ -98,9 +112,22 @@ func (c *Consumer) lag() int64 {
 	return reader.Stats().Lag
 }
 
+// Ping сообщает о готовности обрабатывать сообщения
+func (c *Consumer) Ping(ctx context.Context) error {
+	if !c.running.Load() {
+		return errors.New("kafka: consumer loop is not running")
+	}
+
+	return kafkax.PingTopic(ctx, c.client, c.topic)
+}
+
 // Run читает события из брокера до отмены контекста или закрытия reader.
 func (c *Consumer) Run(ctx context.Context) error {
+	c.running.Store(true)
+
 	defer func() {
+		c.running.Store(false)
+
 		if err := c.reader.Close(); err != nil {
 			c.log.Error("close kafka reader", slog.Any("error", err))
 		}

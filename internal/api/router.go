@@ -17,7 +17,7 @@ import (
 )
 
 // healthPath - маршрут проверки для хелсчека.
-const healthPath = "/health"
+const healthPath = handlers.HealthPath
 
 // Deps - зависимости роутера.
 type Deps struct {

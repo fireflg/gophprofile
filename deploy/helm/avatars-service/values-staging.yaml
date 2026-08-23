@@ -36,6 +36,7 @@ config:
     brokers: kafka-0.staging.example.com:9092,kafka-1.staging.example.com:9092
   otel:
     endpoint: otel-collector.monitoring:4317
+    insecure: false
     sampleRatio: 1
 
 secrets:
