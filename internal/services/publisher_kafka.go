@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/fireflg/gophprofile/internal/config"
 	"github.com/fireflg/gophprofile/internal/domain"
+	"github.com/fireflg/gophprofile/pkg/kafkax"
 	"github.com/fireflg/gophprofile/pkg/otelx"
 )
 
@@ -112,32 +112,7 @@ func (p *KafkaPublisher) Publish(ctx context.Context, event domain.Event) error 
 
 // Ping проверяет доступность брокера запросом метаданных топика.
 func (p *KafkaPublisher) Ping(ctx context.Context) error {
-	resp, err := p.client.Metadata(ctx, &kafka.MetadataRequest{Topics: []string{p.topic}})
-	if err != nil {
-		return fmt.Errorf("kafka metadata: %w", err)
-	}
-
-	if len(resp.Brokers) == 0 {
-		return errors.New("kafka: cluster reported no brokers")
-	}
-
-	for _, topic := range resp.Topics {
-		if topic.Name != p.topic {
-			continue
-		}
-
-		if topic.Error != nil {
-			return fmt.Errorf("kafka topic %s: %w", p.topic, topic.Error)
-		}
-
-		if len(topic.Partitions) == 0 {
-			return fmt.Errorf("kafka topic %s has no partitions", p.topic)
-		}
-
-		return nil
-	}
-
-	return fmt.Errorf("kafka topic %s is missing", p.topic)
+	return kafkax.PingTopic(ctx, p.client, p.topic)
 }
 
 // Close закрывает продюсер.

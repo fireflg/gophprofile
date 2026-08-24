@@ -1,0 +1,42 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "avatars-service.fullname" . }}
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - {{ include "avatars-service.fullname" . }}-config
+      {{- if .Values.migrations.enabled }}
+      - {{ include "avatars-service.fullname" . }}-migrations
+      {{- end }}
+      {{- if .Values.vault.enabled }}
+      - {{ include "avatars-service.fullname" . }}-vault-agent
+      {{- end }}
+    verbs: ["get", "watch"]
+  {{- if not .Values.vault.enabled }}
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      - {{ include "avatars-service.secretName" . }}
+    verbs: ["get", "watch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "avatars-service.fullname" . }}
+  labels:
+    {{- include "avatars-service.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "avatars-service.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "avatars-service.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

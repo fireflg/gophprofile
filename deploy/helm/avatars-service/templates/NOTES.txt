@@ -1,0 +1,24 @@
+{{ .Chart.Name }} {{ .Chart.Version }} released as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Server:  deployment/{{ include "avatars-service.fullname" . }}-server ({{ if .Values.server.autoscaling.enabled }}hpa {{ .Values.server.autoscaling.minReplicas }}-{{ .Values.server.autoscaling.maxReplicas }}{{ else }}{{ .Values.server.replicaCount }} replicas{{ end }})
+Worker:  deployment/{{ include "avatars-service.fullname" . }}-worker ({{ if .Values.worker.autoscaling.enabled }}hpa {{ .Values.worker.autoscaling.minReplicas }}-{{ .Values.worker.autoscaling.maxReplicas }}{{ else }}{{ .Values.worker.replicaCount }} replicas{{ end }})
+Secrets: {{ if .Values.vault.enabled }}vault agent init container -> /vault/secrets/config.json{{ else }}secret/{{ include "avatars-service.secretName" . }}{{ end }}
+Migrations: {{ if .Values.migrations.enabled }}init container ({{ .Values.migrations.image }}){{ else }}disabled{{ end }}
+
+Web UI and API:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "avatars-service.fullname" . }} 8080:{{ .Values.service.httpPort }}
+  open http://localhost:8080
+
+Metrics:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "avatars-service.fullname" . }} 9090:{{ .Values.service.metricsPort }}
+  curl -s localhost:9090{{ .Values.config.metrics.path }} | grep avatars_
+{{- if not .Values.serviceMonitor.enabled }}
+
+ServiceMonitor is disabled: enable it with --set serviceMonitor.enabled=true when prometheus-operator CRDs are installed.
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+Ingress: http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}{{ .Values.ingress.path }}
+{{- end }}

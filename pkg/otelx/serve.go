@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -25,6 +26,7 @@ const maxPort = 65535
 // MetricsServer отдаёт метрики в формате Prometheus на отдельном порту.
 type MetricsServer struct {
 	server   *http.Server
+	router   chi.Router
 	listener net.Listener
 	addr     string
 	path     string
@@ -44,8 +46,8 @@ func NewMetricsServer(ctx context.Context, cfg config.Metrics, registry *prometh
 		return nil, fmt.Errorf("metrics: path must start with /, got %q", cfg.Path)
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle(cfg.Path, promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry}))
+	router := chi.NewRouter()
+	router.Handle(cfg.Path, promhttp.HandlerFor(registry, promhttp.HandlerOpts{Registry: registry}))
 
 	var lc net.ListenConfig
 
@@ -55,11 +57,21 @@ func NewMetricsServer(ctx context.Context, cfg config.Metrics, registry *prometh
 	}
 
 	return &MetricsServer{
-		server:   &http.Server{Handler: mux, ReadHeaderTimeout: metricsReadHeaderTimeout},
+		server:   &http.Server{Handler: router, ReadHeaderTimeout: metricsReadHeaderTimeout},
+		router:   router,
 		listener: listener,
 		addr:     cfg.Addr(),
 		path:     cfg.Path,
 	}, nil
+}
+
+// Handle публикует дополнительный маршрут на служебном порту; вызывается до Serve.
+func (s *MetricsServer) Handle(pattern string, handler http.HandlerFunc) {
+	if s == nil {
+		return
+	}
+
+	s.router.Get(pattern, handler)
 }
 
 // Serve обслуживает скрейп до вызова Shutdown; вызывается в отдельной горутине.
